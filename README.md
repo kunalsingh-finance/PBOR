@@ -42,24 +42,6 @@ python -m src.run_month_end --asof 2026-01-10
 python -m src.show_results --month 2026-01
 ```
 
-## Convert real GSMIF data and run
-
-```powershell
-cd C:\Users\perso\OneDrive\Documents\PBOR-Lite
-python .\scripts\convert_gsmif_to_pbor.py `
-  --input "C:\Users\perso\Downloads\gsmif (1).csv" `
-  --out-dir ".\data_real\gsmif" `
-  --portfolio-id PF_GSMIF `
-  --benchmark-id BM1 `
-  --benchmark-source stooq `
-  --benchmark-symbol SPY.US
-
-python -m src.run_month_end --asof 2026-02-18 --data-dir .\data_real\gsmif
-python -m src.show_results --month 2026-02
-```
-
-If external market download is unavailable, the converter automatically falls back to internal NAV-derived benchmark returns.
-
 ## Build market-based dummy stock data and run
 
 ```powershell
