@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.db
+outputs/*/
+!outputs/.gitkeep
+data/calendar_cache/
+data_real/

@@ -1,0 +1,4 @@
+date,portfolio_id,security_id,quantity,market_value_base,cash_balance_base
+2026-01-10,PF1,SEC1,200,31400,0
+2026-01-10,PF1,SEC2,250,19250,0
+2026-01-10,PF1,SEC3,100,14478,0

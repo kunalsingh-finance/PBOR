@@ -1,0 +1,4 @@
+security_id,ticker,name,asset_class,sector,currency
+SEC1,AAPL,Apple Inc,Equity,Tech,USD
+SEC2,XOM,Exxon Mobil,Equity,Energy,USD
+SEC3,SAP,SAP SE,Equity,Tech,EUR
