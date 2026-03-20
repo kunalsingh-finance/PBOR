@@ -1,6 +1,10 @@
 pandas>=2.2
 numpy>=1.26
 PyYAML>=6.0
+requests>=2.31
+yfinance>=0.2
+fredapi>=0.5
+streamlit>=1.32
 pytest>=8.0
 matplotlib>=3.8
 openpyxl>=3.1

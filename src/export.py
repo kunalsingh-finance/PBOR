@@ -4,6 +4,9 @@ import json
 import math
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
@@ -220,6 +223,7 @@ def _build_onepager_markdown(
     if market_last_closed:
         lines.append(f"Market last closed session: {market_last_closed}")
     lines.append(f"Dataset: {_dataset_label(daily_returns=daily_returns, attribution=attribution)}")
+    lines.append("Data note: market data + synthetic transaction ledger for demonstration.")
     lines.append(
         "Analysis window: "
         f"{analysis_window['start']} to {analysis_window['end']} "
@@ -564,6 +568,40 @@ def _export_excel_report(
         return alt_path
 
 
+def _export_controls_table_image(
+    target: Path,
+    recon_latest: dict[str, object],
+) -> Path:
+    controls_path = target / "controls_table.png"
+    fig, ax = plt.subplots(figsize=(6.8, 2.2))
+    ax.axis("off")
+    rows = [
+        ["Attribution-Active diff", f"{float(recon_latest['diff_bps']):.1f} bps"],
+        ["Sum weights", f"Wp={float(recon_latest['w_p_sum']):.2f}, Wb={float(recon_latest['w_b_sum']):.2f}"],
+        ["Sector->Portfolio diff", f"{float(recon_latest['portfolio_return_diff_bps']):.1f} bps"],
+    ]
+    table = ax.table(
+        cellText=rows,
+        colLabels=["Control", "Value"],
+        loc="center",
+        cellLoc="left",
+        colWidths=[0.52, 0.48],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.0, 1.25)
+    for (r, _), cell in table.get_celld().items():
+        cell.set_linewidth(0.35)
+        cell.set_edgecolor("#6D7785")
+        if r == 0:
+            cell.set_facecolor("#F1F5F9")
+    status = "Validated" if bool(recon_latest.get("within_tolerance", False)) else "Data Under Review"
+    ax.set_title(f"Controls Check ({status})", fontsize=11, loc="left", pad=6)
+    fig.savefig(controls_path, dpi=180)
+    plt.close(fig)
+    return controls_path
+
+
 def export_outputs(
     output_root: Path,
     asof_date: str,
@@ -642,6 +680,10 @@ def export_outputs(
         cash_return_source=cash_return_source,
         date_context=window_ctx,
     )
+    controls_table_image = _export_controls_table_image(
+        target=target,
+        recon_latest=recon_latest,
+    )
 
     period_rows = _period_return_rows(daily_returns)
     risk = _risk_metrics(daily_returns=daily_returns, cash_return_source=cash_return_source)
@@ -654,6 +696,7 @@ def export_outputs(
         "reconciliation_tolerance_bps": float(reconciliation_tolerance_bps),
         "data_status": "Validated" if bool(recon_latest["within_tolerance"]) else "Data Under Review",
         "dataset_label": _dataset_label(daily_returns=daily_returns, attribution=attribution),
+        "data_note": "market data + synthetic transaction ledger for demonstration",
         "analysis_window": {
             "start": str(analysis_window["start"]),
             "end": str(analysis_window["end"]),
@@ -721,6 +764,7 @@ def export_outputs(
             "qa_ingest_summary.csv",
             "onepager.md",
             report_workbook.name,
+            controls_table_image.name,
             "tearsheet.png",
             "onepager.pdf",
         ],

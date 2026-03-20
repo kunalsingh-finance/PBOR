@@ -1,95 +1,91 @@
 # PBOR-Lite
 
-PBOR-Lite is an end-to-end Performance Book of Record workflow for monthly performance measurement, attribution, reconciliation, and reporting.
+Performance Book of Record workflow for return measurement, attribution, controls, and reporting.
 
-## Core capabilities
+## What It Does
 
-- CSV ingestion with schema validation and policy-driven controls
-- SQL PBOR data model (`dim_*`, `fact_*`, `pbor_*`) in SQLite
-- Daily positions, market values, and daily return series
-- Monthly Time-Weighted Return (TWR) and Modified Dietz returns
-- Brinson-Fachler sector attribution (allocation, selection, interaction)
-- Attribution-to-active reconciliation gate (<5 bps tolerance)
-- Automated break detection and auditable exception logging
-- Interview-ready reporting pack (CSV, Excel, PDF, PNG, Markdown, JSON)
+- Builds PBOR input data from live prices, dividends, benchmark series, and SOFR policy data.
+- Computes daily and monthly returns, Brinson-Fachler attribution, QA breaks, and reconciliation controls.
+- Publishes a SQLite-backed output pack and Streamlit dashboard for review.
 
-## Project structure
+## Architecture
+
+```text
+yfinance + FRED
+       |
+       v
+scripts/build_real_data.py
+       |
+       v
+src/run_month_end.py
+       |
+       +--> pbor_lite.db
+       |
+       +--> outputs/YYYY-MM/
+       |
+       v
+app/dashboard.py
+```
+
+## Quick Start
+
+```powershell
+python -m pip install -r requirements.txt
+python scripts/build_real_data.py
+python -m src.run_month_end --asof $(python scripts/last_month_end.py) --data-dir .\data_real\market_real
+streamlit run app/dashboard.py
+```
+
+## Output Pack
+
+Each month-end run writes to `outputs/YYYY-MM/`.
+
+- `summary.json`: machine-readable run metadata and file inventory
+- `report.xlsx`: workbook with returns, attribution, and QA tabs
+- `onepager.pdf`: month-end tear sheet
+- `tearsheet.png`: presentation-ready image export
+- `controls_table.png`: controls snapshot used by the report pack
+- `onepager.md`: narrative summary
+- `attribution_reconciliation.csv`: reconciliation evidence
+
+## Methodology
+
+See [METHODOLOGY.md](METHODOLOGY.md).
+
+## Project Structure
 
 ```text
 PBOR-Lite/
-  data/
-  docs/
-  outputs/
-  scripts/
-  sql/
-  src/
-  tests/
-  policy.yaml
-  requirements.txt
+|-- app/
+|   `-- dashboard.py
+|-- data/
+|-- data_real/
+|   |-- market_dummy/
+|   `-- market_real/
+|-- outputs/
+|-- scripts/
+|   |-- build_market_dummy_data.py
+|   |-- build_real_data.py
+|   `-- last_month_end.py
+|-- sql/
+|-- src/
+|   |-- attribution.py
+|   |-- export.py
+|   |-- ingest.py
+|   |-- qa.py
+|   |-- reconciliation.py
+|   |-- returns.py
+|   `-- run_month_end.py
+|-- tests/
+|-- .github/
+|   `-- workflows/
+|       `-- monthly_run.yml
+|-- METHODOLOGY.md
+|-- pbor_lite.db
+|-- policy.yaml
+`-- requirements.txt
 ```
 
-## Run the full workflow
+## Tech Stack
 
-```powershell
-cd C:\Users\perso\OneDrive\Documents\PBOR-Lite
-powershell -ExecutionPolicy Bypass -File .\scripts\run_demo.ps1 -AsOf 2026-01-10
-```
-
-## Run commands directly
-
-```bash
-python -m src.run_month_end --asof 2026-01-10
-python -m src.show_results --month 2026-01
-```
-
-## Build market-based dummy stock data and run
-
-```powershell
-cd C:\Users\perso\OneDrive\Documents\PBOR-Lite
-python .\scripts\build_market_dummy_data.py `
-  --out-dir ".\data_real\market_dummy" `
-  --start 2025-08-22 `
-  --end 2026-02-18 `
-  --portfolio-id PF_MKT `
-  --benchmark-id BM1
-
-python -m src.run_month_end --asof 2026-02-18 --data-dir .\data_real\market_dummy
-python -m src.show_results --month 2026-02
-```
-
-The builder attempts to pull daily prices from Stooq first. If a symbol cannot be downloaded, it automatically falls back to deterministic synthetic price paths and records the source in `dataset_summary.json`.
-
-## Output package
-
-Outputs are written to `outputs/YYYY-MM/`.
-
-- `daily_returns.csv`: daily portfolio value, external flows, and benchmark-linked daily return
-- `monthly_returns.csv`: monthly TWR, Modified Dietz, benchmark return, active return
-- `attribution.csv`: Brinson-Fachler effects by sector
-- `attribution_reconciliation.csv`: attribution sum vs active return reconciliation and tolerance status
-- `breaks.csv`: break log with severity and investigation notes
-- `qa_ingest_summary.csv`: ingestion controls and validation results
-- `report.xlsx`: refreshable workbook with Summary, Returns, Attribution, and Break tabs
-- `onepager.pdf`: executive one-page performance and attribution tear sheet
-- `tearsheet.png`: chart image for presentations and applications
-- `onepager.md`: analyst narrative summary of the month-end cycle
-- `summary.json`: machine-readable run metadata and artifact inventory
-
-Publication policy:
-
-- Attribution is published only when reconciliation diff is below the configured tolerance (`< 5 bps` by default).
-- Reporting window is month-to-date as-of (`reporting_window: mtd_asof` in `policy.yaml`).
-
-## Technology stack
-
-- Python 3.11+
-- pandas, numpy
-- matplotlib
-- openpyxl
-- SQLite
-- pytest
-
-## Documentation
-
-- Methodology: `docs/Methodology.md`
-- Process flow: `docs/HowItWorks.md`
+Python, pandas, NumPy, yfinance, FRED, PyYAML, requests, Streamlit, SQLite, matplotlib, openpyxl.

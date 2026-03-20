@@ -70,6 +70,7 @@ def _build_positions(
     qty_daily = buy_sell.groupby(["date", "portfolio_id", "security_id"], as_index=False)["signed_qty"].sum()
 
     min_date = min(qty_daily["date"].min(), prices["date"].min())
+    # Keep holdings on a full calendar grid so positions carry cleanly across non-trading days.
     all_dates = pd.date_range(min_date, asof_date, freq="D").date
 
     pivot = qty_daily.pivot_table(
@@ -149,6 +150,15 @@ def _build_benchmark_daily(benchmark_weights: pd.DataFrame, benchmark_returns: p
     return bench
 
 
+def _portfolio_benchmark_id(policy: dict[str, object], portfolio_id: str) -> str:
+    benchmark_id_default = str(policy.get("benchmark_id_default", "BM1"))
+    raw_map = policy.get("portfolio_benchmark_map", {})
+    if not isinstance(raw_map, dict):
+        return benchmark_id_default
+    mapped = raw_map.get(str(portfolio_id))
+    return str(mapped).strip().upper() if mapped else benchmark_id_default
+
+
 def _link_returns(series: pd.Series) -> float:
     clean = series.dropna()
     if clean.empty:
@@ -161,6 +171,7 @@ def compute_returns(
     policy: dict[str, object],
     asof_date: pd.Timestamp,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    asof_day = pd.to_datetime(asof_date).date()
     base_currency = str(policy["base_currency"])
     prices = inputs["prices.csv"]
     transactions = inputs["transactions.csv"]
@@ -210,8 +221,17 @@ def compute_returns(
     )
 
     benchmark_daily = _build_benchmark_daily(benchmark_weights, benchmark_returns)
-    benchmark_daily_by_date = benchmark_daily.groupby("date", as_index=False)["benchmark_return"].mean()
-    daily_returns = daily_returns.merge(benchmark_daily_by_date, on="date", how="left")
+    benchmark_daily = benchmark_daily[benchmark_daily["date"] <= asof_day].copy()
+    daily_returns["benchmark_id"] = daily_returns["portfolio_id"].map(
+        lambda portfolio_id: _portfolio_benchmark_id(policy=policy, portfolio_id=str(portfolio_id))
+    )
+    benchmark_daily_lookup = benchmark_daily.rename(columns={"benchmark_id": "mapped_benchmark_id"})
+    daily_returns = daily_returns.merge(
+        benchmark_daily_lookup,
+        left_on=["date", "benchmark_id"],
+        right_on=["date", "mapped_benchmark_id"],
+        how="left",
+    ).drop(columns=["mapped_benchmark_id"])
     daily_returns = daily_returns[
         [
             "date",
@@ -284,8 +304,8 @@ def compute_returns(
     ]
 
     benchmark_monthly = (
-        benchmark_daily_by_date.assign(month_bucket=lambda x: pd.to_datetime(x["date"]).dt.to_period("M"))
-        .groupby("month_bucket", as_index=False)
+        benchmark_daily.assign(month_bucket=lambda x: pd.to_datetime(x["date"]).dt.to_period("M"))
+        .groupby(["benchmark_id", "month_bucket"], as_index=False)
         .agg(
             month_start=("date", "min"),
             month_end=("date", "max"),
@@ -303,7 +323,14 @@ def compute_returns(
 
     monthly_returns = monthly_twr.merge(monthly_dietz, on=["portfolio_id", "month_end"], how="left")
     monthly_returns = monthly_returns.merge(monthly_arithmetic, on=["portfolio_id", "month_start", "month_end"], how="left")
-    monthly_returns = monthly_returns.merge(benchmark_monthly, on=["month_start", "month_end"], how="left")
+    monthly_returns["benchmark_id"] = monthly_returns["portfolio_id"].map(
+        lambda portfolio_id: _portfolio_benchmark_id(policy=policy, portfolio_id=str(portfolio_id))
+    )
+    monthly_returns = monthly_returns.merge(
+        benchmark_monthly,
+        on=["benchmark_id", "month_start", "month_end"],
+        how="left",
+    )
     monthly_returns["active_return"] = monthly_returns["portfolio_return_twr"] - monthly_returns["benchmark_return"]
     monthly_returns["active_return_arithmetic"] = (
         monthly_returns["portfolio_return_arithmetic"] - monthly_returns["benchmark_return_arithmetic"]

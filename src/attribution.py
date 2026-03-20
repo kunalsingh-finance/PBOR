@@ -121,13 +121,13 @@ def _portfolio_sector_period(
         flows = flows[flows["date"] > flows["first_date"]]
         flows = flows.groupby(["portfolio_id", "month_bucket", "sector"], as_index=False)["net_internal_flow"].sum()
     income = _income_by_sector(transactions=transactions, security_master=security_master)
-    period = bop.merge(eop, on=["portfolio_id", "month_bucket", "sector"], how="outer").fillna(0.0)
-    period = period.merge(flows, on=["portfolio_id", "month_bucket", "sector"], how="left").fillna(
-        {"net_internal_flow": 0.0}
-    )
-    period = period.merge(income, on=["portfolio_id", "month_bucket", "sector"], how="left").fillna(
-        {"sector_income": 0.0}
-    )
+    period = bop.merge(eop, on=["portfolio_id", "month_bucket", "sector"], how="outer")
+    for col in ["bop_mv", "eop_mv"]:
+        period[col] = pd.to_numeric(period[col], errors="coerce").fillna(0.0)
+    period = period.merge(flows, on=["portfolio_id", "month_bucket", "sector"], how="left")
+    period["net_internal_flow"] = pd.to_numeric(period["net_internal_flow"], errors="coerce").fillna(0.0)
+    period = period.merge(income, on=["portfolio_id", "month_bucket", "sector"], how="left")
+    period["sector_income"] = pd.to_numeric(period["sector_income"], errors="coerce").fillna(0.0)
     period = period.merge(
         bounds[["portfolio_id", "month_bucket", "period_days"]],
         on=["portfolio_id", "month_bucket"],
@@ -188,7 +188,9 @@ def _benchmark_sector_period(
     month_end = br.groupby(["benchmark_id", "month_bucket"], as_index=False)["date"].max().rename(
         columns={"date": "month_end"}
     )
-    bench = bw_month.merge(br_month, on=["benchmark_id", "month_bucket", "sector"], how="outer").fillna(0.0)
+    bench = bw_month.merge(br_month, on=["benchmark_id", "month_bucket", "sector"], how="outer")
+    bench["w_b"] = pd.to_numeric(bench["w_b"], errors="coerce").fillna(0.0)
+    bench["r_b"] = pd.to_numeric(bench["r_b"], errors="coerce").fillna(0.0)
     bench = bench.merge(month_end, on=["benchmark_id", "month_bucket"], how="left")
     return bench
 
@@ -199,6 +201,7 @@ def compute_monthly_attribution(
     benchmark_weights: pd.DataFrame,
     benchmark_returns: pd.DataFrame,
     benchmark_id_default: str,
+    portfolio_benchmark_map: dict[str, str] | None = None,
     transactions: pd.DataFrame | None = None,
     cash_return_source: str = "0%",
     cash_return_annual_rates: dict[str, float] | None = None,
@@ -221,6 +224,14 @@ def compute_monthly_attribution(
             ]
         )
 
+    asof_day = pd.to_datetime(positions["date"]).max().date()
+    benchmark_weights = benchmark_weights.copy()
+    benchmark_returns = benchmark_returns.copy()
+    benchmark_weights["date"] = pd.to_datetime(benchmark_weights["date"]).dt.date
+    benchmark_returns["date"] = pd.to_datetime(benchmark_returns["date"]).dt.date
+    benchmark_weights = benchmark_weights[benchmark_weights["date"] <= asof_day].copy()
+    benchmark_returns = benchmark_returns[benchmark_returns["date"] <= asof_day].copy()
+
     port = _portfolio_sector_period(
         positions=positions,
         security_master=security_master,
@@ -234,9 +245,13 @@ def compute_monthly_attribution(
     )
 
     rows: list[dict[str, object]] = []
+    benchmark_map = {
+        str(portfolio_id): str(benchmark_id).strip().upper()
+        for portfolio_id, benchmark_id in (portfolio_benchmark_map or {}).items()
+    }
     for (portfolio_id, month_bucket), port_chunk in port.groupby(["portfolio_id", "month_bucket"]):
         month_end = port_chunk["month_end"].max()
-        benchmark_id = benchmark_id_default
+        benchmark_id = benchmark_map.get(str(portfolio_id), benchmark_id_default)
         bench_chunk = bench[
             (bench["benchmark_id"] == benchmark_id)
             & (bench["month_bucket"] == month_bucket)

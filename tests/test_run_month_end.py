@@ -17,8 +17,10 @@ def test_run_month_end_creates_rows() -> None:
     assert (export_path / "summary.json").exists()
     assert (export_path / "onepager.pdf").exists()
     assert (export_path / "tearsheet.png").exists()
+    assert (export_path / "controls_table.png").exists()
     assert (export_path / "attribution_reconciliation.csv").exists()
     summary = json.loads((export_path / "summary.json").read_text(encoding="utf-8"))
     workbook_names = [name for name in summary["files"] if str(name).lower().endswith(".xlsx")]
     assert len(workbook_names) >= 1
     assert (export_path / workbook_names[0]).exists()
+    assert "controls_table.png" in summary["files"]
