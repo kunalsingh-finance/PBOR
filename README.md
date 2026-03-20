@@ -1,12 +1,12 @@
 # PBOR-Lite
 
-Performance book of record for monthly returns, attribution, QA, and reporting.
+Performance book of record for return measurement, attribution, QA controls, and reporting.
 
 ## What It Does
 
-- Builds PBOR input files from market data.
-- Runs return, attribution, and control workflows.
-- Stores results in SQLite and publishes monthly reports and a dashboard.
+- Builds PBOR input files from live market data.
+- Runs monthly return, attribution, reconciliation, and QA workflows.
+- Publishes a SQLite-backed dashboard plus a monthly output pack.
 
 ## Architecture
 
@@ -36,11 +36,15 @@ python -m src.run_month_end --asof $(python scripts/last_month_end.py) --data-di
 streamlit run app/dashboard.py
 ```
 
+## Sample Output
+
+![PBOR-Lite tear sheet sample](docs/tearsheet-sample.png)
+
 ## Output Pack
 
 Each run writes to `outputs/YYYY-MM/`.
 
-- `report.xlsx`: full workbook with returns, attribution, and breaks
+- `report.xlsx`: workbook with returns, attribution, reconciliation, and breaks
 - `onepager.pdf`: monthly tear sheet
 - `tearsheet.png`: image export
 - `controls_table.png`: controls snapshot
@@ -60,11 +64,12 @@ PBOR-Lite/
 |   `-- dashboard.py
 |-- data/
 |-- data_real/
-|   |-- market_dummy/
-|   `-- market_real/
+|   |-- market_real/
+|   `-- market_real_multi/
+|-- docs/
+|   `-- tearsheet-sample.png
 |-- outputs/
 |-- scripts/
-|   |-- build_market_dummy_data.py
 |   |-- build_real_data.py
 |   `-- last_month_end.py
 |-- sql/
@@ -74,6 +79,7 @@ PBOR-Lite/
 |   |-- ingest.py
 |   |-- qa.py
 |   |-- reconciliation.py
+|   |-- report.py
 |   |-- returns.py
 |   `-- run_month_end.py
 |-- tests/
