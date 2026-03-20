@@ -1,12 +1,12 @@
 # PBOR-Lite
 
-Performance Book of Record workflow for return measurement, attribution, controls, and reporting.
+Performance book of record for monthly returns, attribution, QA, and reporting.
 
 ## What It Does
 
-- Builds PBOR input data from live prices, dividends, benchmark series, and SOFR policy data.
-- Computes daily and monthly returns, Brinson-Fachler attribution, QA breaks, and reconciliation controls.
-- Publishes a SQLite-backed output pack and Streamlit dashboard for review.
+- Builds PBOR input files from market data.
+- Runs return, attribution, and control workflows.
+- Stores results in SQLite and publishes monthly reports and a dashboard.
 
 ## Architecture
 
@@ -38,19 +38,19 @@ streamlit run app/dashboard.py
 
 ## Output Pack
 
-Each month-end run writes to `outputs/YYYY-MM/`.
+Each run writes to `outputs/YYYY-MM/`.
 
-- `summary.json`: machine-readable run metadata and file inventory
-- `report.xlsx`: workbook with returns, attribution, and QA tabs
-- `onepager.pdf`: month-end tear sheet
-- `tearsheet.png`: presentation-ready image export
-- `controls_table.png`: controls snapshot used by the report pack
-- `onepager.md`: narrative summary
-- `attribution_reconciliation.csv`: reconciliation evidence
+- `report.xlsx`: full workbook with returns, attribution, and breaks
+- `onepager.pdf`: monthly tear sheet
+- `tearsheet.png`: image export
+- `controls_table.png`: controls snapshot
+- `onepager.md`: written summary
+- `summary.json`: run metadata
+- `attribution_reconciliation.csv`: reconciliation output
 
 ## Methodology
 
-See [METHODOLOGY.md](METHODOLOGY.md).
+Methodology notes are in [METHODOLOGY.md](METHODOLOGY.md).
 
 ## Project Structure
 
@@ -88,4 +88,4 @@ PBOR-Lite/
 
 ## Tech Stack
 
-Python, pandas, NumPy, yfinance, FRED, PyYAML, requests, Streamlit, SQLite, matplotlib, openpyxl.
+Python, pandas, NumPy, yfinance, FRED, requests, PyYAML, Streamlit, SQLite, matplotlib, and openpyxl.

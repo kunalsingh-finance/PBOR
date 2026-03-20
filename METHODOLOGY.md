@@ -2,15 +2,15 @@
 
 ## Return Methodology
 
-PBOR-Lite treats Time-Weighted Return (TWR) as the primary performance measure because it isolates the effect of investment decisions from the timing and size of external cash flows. That makes TWR the appropriate standard for manager evaluation and benchmark-relative reporting.
+Time-Weighted Return (TWR) is the primary portfolio return in PBOR-Lite. That is the standard measure for manager evaluation because it removes the impact of external cash flows and isolates investment performance.
 
-Daily portfolio return is calculated from beginning market value, ending market value, and external cash flow for the day. Monthly TWR is then produced by chain-linking the daily series:
+Daily return is calculated from beginning market value, ending market value, and external flow for the day. Monthly TWR is then produced by chain-linking the daily series:
 
 `(1 + r_1) x (1 + r_2) x ... x (1 + r_n) - 1`
 
-Modified Dietz is retained alongside TWR as a control and fallback methodology when cash flows are large relative to portfolio net asset value. In PBOR-Lite, large cash flow review is tied to the policy threshold of greater than 10% of NAV. Modified Dietz is useful in those cases because it approximates money-weighted performance while preserving a deterministic month-end calculation without requiring full intra-day valuations.
+Modified Dietz is retained as a secondary measure and control. It is most useful when cash flow is large relative to portfolio size. In PBOR-Lite, that review point is tied to the policy threshold of more than 10% of net asset value. Modified Dietz provides a practical money-weighted approximation without requiring full intraday valuations.
 
-Arithmetic return is stored separately because it is useful for reconciliation against attribution. Brinson-Fachler attribution effects sum arithmetically, not geometrically, so arithmetic portfolio and benchmark returns provide the appropriate active-return reference for validating attribution totals against reported performance.
+Arithmetic return is stored separately because attribution reconciles on an arithmetic basis. Brinson-Fachler effects sum arithmetically, so arithmetic portfolio and benchmark returns provide the correct active-return reference for reconciliation.
 
 ## Attribution Methodology
 
@@ -28,27 +28,27 @@ where:
 - `r_b` = benchmark sector return
 - `R_b` = total benchmark return
 
-Brinson-Fachler is preferred over the original Brinson-Hood-Beebower formulation because it measures allocation relative to the benchmark's total return rather than raw sector return alone. That makes the allocation effect more interpretable in benchmark-relative reporting and more consistent with modern institutional performance practice.
+Brinson-Fachler is used instead of the original Brinson-Hood-Beebower formulation because allocation is measured relative to total benchmark return rather than raw sector return alone. That makes the allocation result more useful in benchmark-relative reporting.
 
-Cash is treated as an explicit sector. Its return is not inferred from incidental cash balances. Instead, PBOR-Lite applies the configured policy cash-return source, typically SOFR, so the cash segment reflects a documented investment policy assumption rather than an arbitrary residual return.
+Cash is treated as its own sector. Its return is not inferred from incidental balances. The system applies the policy cash-return source, typically SOFR, so the cash segment reflects a documented assumption rather than a residual return.
 
-Internal buy and sell flows are excluded from sector return construction. This prevents trade movement between sectors from contaminating sector performance with transfer effects. Sector returns therefore reflect valuation change and income, not internal capital reallocation.
+Internal buy and sell flows are excluded from sector return construction. This avoids mixing transfer effects with sector performance. Sector return therefore reflects valuation change and income, not internal capital movement.
 
 ## Reconciliation Gate
 
-PBOR-Lite enforces a 5 basis-point attribution reconciliation tolerance. The attribution-active reconciliation compares the summed Brinson-Fachler active effect to the arithmetic active return used for reporting. A difference below 5 bps is treated as within tolerance. A difference at or above 5 bps is treated as a failed control.
+PBOR-Lite enforces a 5 basis-point reconciliation tolerance between reported active return and summed attribution effect. A difference below 5 bps is treated as within tolerance. A difference at or above 5 bps is a failed control.
 
-When the reconciliation gate fails, attribution output is withheld from publication and the exception is logged as a QA break. This is deliberate. In a client-reporting context, publishing performance attribution that does not reconcile to reported active return is a control failure, not a cosmetic variance.
+When the gate fails, attribution output is withheld and the exception is logged as a QA break. In a client-reporting context, attribution that does not reconcile to reported active return should not be published.
 
-The same control framework also checks weight integrity and sector-to-portfolio return consistency so that attribution is supported by a coherent underlying return base.
+The same control framework also checks weight integrity and sector-to-portfolio return consistency.
 
 ## Data & Controls
 
-Market prices in the Level 2 real-data flow are sourced from yfinance adjusted close history. Cash return is sourced from SOFR using FRED when available, with the configured policy rate retained when a live refresh is not available.
+Prices in the real-data flow are sourced from yfinance adjusted close history. Cash return is sourced from SOFR through FRED when available. If a live SOFR refresh is not available, the configured policy rate is retained.
 
-The real-data builder forward-fills price series for up to three consecutive calendar days. This supports weekends and short market closures while preventing open-ended carry-forward of stale prices.
+The real-data builder forward-fills price series for up to three consecutive calendar days. This supports weekends and short market closures without carrying stale prices indefinitely.
 
-QA breaks are classified by type and severity. Current break categories include, among others:
+QA breaks are classified by type and severity. Current break categories include:
 
 - missing prices
 - missing FX rates
@@ -59,8 +59,8 @@ QA breaks are classified by type and severity. Current break categories include,
 - holdings mismatches
 - attribution reconciliation failures
 
-Severity is used to distinguish blocking exceptions from advisory review items:
+Severity levels are used as follows:
 
-- `HIGH` indicates a control break that should block publication until resolved
-- `MEDIUM` indicates a material anomaly that requires investigation
-- `LOW` is reserved for non-blocking informational exceptions
+- `HIGH` = publication should stop until resolved
+- `MEDIUM` = material exception that requires review
+- `LOW` = informational or non-blocking exception

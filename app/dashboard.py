@@ -1,14 +1,4 @@
-"""PBOR-Lite Streamlit dashboard.
-
-Run from the project root:
-
-    streamlit run app/dashboard.py
-
-This dashboard reads directly from the PBOR-Lite SQLite store and
-renders monthly returns, attribution, QA breaks, policy metadata,
-and daily risk views. The app is intentionally read-only and expects
-the month-end pipeline to populate ``pbor_lite.db`` first.
-"""
+"""Dashboard for PBOR-Lite data in pbor_lite.db."""
 
 from __future__ import annotations
 
@@ -35,7 +25,7 @@ def _show_empty_message() -> None:
     st.markdown(
         """
         <div style="padding: 0.9rem 1rem; border-radius: 0.6rem; background: #F3F4F6; color: #374151; border: 1px solid #D1D5DB;">
-            No data available — run the month-end pipeline first.
+            No data available. Run month-end first.
         </div>
         """,
         unsafe_allow_html=True,
@@ -340,10 +330,10 @@ def render_attribution_tab(attribution: pd.DataFrame, monthly_returns: pd.DataFr
 def render_breaks_tab(breaks: pd.DataFrame) -> None:
     st.subheader("QA Breaks")
     if breaks.empty:
-        st.success("✅ No QA Breaks — Clean Run")
+        st.success("No QA breaks in the current run.")
         return
 
-    st.error(f"⚠️ {len(breaks)} Breaks Detected")
+    st.error(f"{len(breaks)} QA breaks in the current run.")
 
     display = pd.DataFrame(
         {
@@ -525,7 +515,7 @@ with st.sidebar:
     st.code(str(DB_PATH))
 
 st.title("PBOR-Lite Dashboard")
-st.caption("Performance monitoring from the live PBOR SQLite store.")
+st.caption("Read-only view of the current PBOR database.")
 
 tabs = st.tabs(
     [
@@ -551,6 +541,3 @@ with tabs[3]:
 
 with tabs[4]:
     render_drawdown_risk_tab(daily_returns, policy)
-
-# requirements.txt additions:
-# streamlit>=1.32

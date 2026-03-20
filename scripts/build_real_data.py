@@ -1,29 +1,4 @@
-"""Build PBOR-Lite input files from live market data.
-
-This script downloads real market data from yfinance, optionally refreshes
-the SOFR policy rate from FRED, and writes PBOR-compatible CSV inputs that
-feed directly into ``python -m src.run_month_end``.
-
-It supports both the original single-portfolio CLI and a multi-portfolio
-JSON config:
-
-    python scripts/build_real_data.py ^
-      --tickers SPY QQQ IWM SCHD ^
-      --start 2024-01-01 ^
-      --end 2026-03-31 ^
-      --portfolio-id PF_REAL ^
-      --benchmark-id BM1 ^
-      --benchmark-ticker SPY ^
-      --out-dir .\data_real\market_real
-
-    python scripts/build_real_data.py ^
-      --portfolios "[{\"portfolio_id\":\"PF_GROWTH\",\"tickers\":[\"QQQ\",\"ARKK\",\"SMH\"],\"benchmark_ticker\":\"QQQ\",\"benchmark_id\":\"BM_GROWTH\"},{\"portfolio_id\":\"PF_INCOME\",\"tickers\":[\"SCHD\",\"VYM\",\"JEPI\"],\"benchmark_ticker\":\"SCHD\",\"benchmark_id\":\"BM_INCOME\"}]" ^
-      --start 2024-01-01 ^
-      --end 2026-03-31 ^
-      --out-dir .\data_real\market_real
-
-Run with ``--dry-run`` to print what would be written without creating files.
-"""
+"""Build PBOR input CSVs from live market data."""
 
 from __future__ import annotations
 
@@ -725,10 +700,10 @@ def _build_sofr_outputs(
 
     if updated_policy:
         if dry_run:
-            _info("Dry run: would update policy.yaml benchmark mapping and SOFR configuration.")
+            _info("Dry run: would update policy.yaml.")
         else:
             policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
-            _info("Updated policy.yaml benchmark mapping and cash return configuration.")
+            _info("Updated policy.yaml.")
 
     return sofr_history, float(used_rate)
 
@@ -756,7 +731,7 @@ def _print_summary_table(
     missing_price_warnings: int,
     dry_run: bool,
 ) -> None:
-    title = "PBOR-Lite Real Data Build"
+    title = "Real Data Build"
     if dry_run:
         title += " (Dry Run)"
 
@@ -814,7 +789,7 @@ def _default_build_command(args: argparse.Namespace) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build PBOR-Lite real-market data inputs.")
+    parser = argparse.ArgumentParser(description="Build real-market PBOR inputs.")
     parser.add_argument("--tickers", nargs="+", default=None, help="Portfolio tickers to download from yfinance.")
     parser.add_argument("--start", default="2024-01-01", help="Start date in YYYY-MM-DD format.")
     parser.add_argument(
@@ -980,7 +955,7 @@ def main() -> None:
 
     if args.dry_run:
         print()
-        _info("Dry run enabled. The following files would be written:")
+        _info("Dry run enabled.")
     else:
         out_dir.mkdir(parents=True, exist_ok=True)
         _info(f"Writing PBOR input files to {out_dir}.")
@@ -1004,17 +979,12 @@ def main() -> None:
     )
 
     print()
-    print("Run the full PBOR-Lite pipeline with:")
+    print("Run month-end with:")
     print(f"  {_default_build_command(args=args)}")
     print(f"  python -m src.run_month_end --asof {build_end.strftime('%Y-%m-%d')} --data-dir {args.out_dir}")
     print()
-    print("The two commands connect correctly when --out-dir and --data-dir point to the same folder.")
+    print("Use the same folder for --out-dir and --data-dir.")
 
 
 if __name__ == "__main__":
     main()
-
-# requirements.txt additions:
-# yfinance>=0.2
-# requests>=2.31
-# fredapi>=0.5

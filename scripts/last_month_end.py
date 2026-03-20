@@ -16,6 +16,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# requirements.txt additions:
-# No additional requirements.
