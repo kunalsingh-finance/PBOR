@@ -104,7 +104,7 @@ def _classify_outlier_cause(
         security_list = ", ".join(sorted(missing_price_secs))
         return (
             f"Price stale/missing for security {security_list}",
-            "Load validated pricing for impacted securities and rerun month-end.",
+            "Load complete pricing for impacted securities and rerun month-end.",
         )
 
     corp_action_txn = tx_day[tx_day["txn_type"].isin(["SPLIT", "DIV", "INT"])]

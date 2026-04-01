@@ -65,14 +65,14 @@ def show_results(project_root: Path, month: str) -> None:
         f"MTD window: {mtd_window.get('start', 'N/A')} to {mtd_window.get('end', 'N/A')} "
         f"({mtd_window.get('obs_rows', 0)} obs rows | {mtd_window.get('trading_days', 0)} trading days)"
     )
-    if data_status != "Validated":
-        print("PRELIMINARY - DO NOT DISTRIBUTE")
+    if data_status != "Controls Passed":
+        print("FOR REVIEW ONLY")
 
     print("\nPerformance:")
     if monthly.empty:
         print("- No monthly rows generated.")
     else:
-        label = "Provisional" if data_status != "Validated" else "Official"
+        label = "Preliminary " if data_status != "Controls Passed" else ""
         for _, row in monthly.iterrows():
             active_twr = _pct(float(row["active_return"]))
             active_arith = (
@@ -81,7 +81,7 @@ def show_results(project_root: Path, month: str) -> None:
                 else "N/A"
             )
             print(
-                f"- {label} {row['portfolio_id']}: "
+                f"- {label}{row['portfolio_id']}: "
                 f"TWR {_pct(float(row['portfolio_return_twr']))}, "
                 f"Dietz {_pct(float(row['portfolio_return_dietz']))}, "
                 f"Benchmark {_pct(float(row['benchmark_return']))}, "

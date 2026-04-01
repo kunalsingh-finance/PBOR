@@ -1,0 +1,6 @@
+PBOR-Lite is a personal/educational project built to better understand the control layer around performance reporting.
+
+It uses public market data plus bundled sample inputs to simulate a PBOR-style month-end reporting workflow: ingest inputs, calculate returns, run attribution, apply QA/reconciliation checks, and generate reporting outputs.
+
+Built with Python, pandas, SQL, SQLite, and Streamlit.
+GitHub: https://github.com/kunalsingh-finance/PBOR

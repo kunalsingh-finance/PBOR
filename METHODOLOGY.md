@@ -38,7 +38,7 @@ Internal buy and sell flows are excluded from sector return construction. This a
 
 PBOR-Lite enforces a 5 basis-point reconciliation tolerance between reported active return and summed attribution effect. A difference below 5 bps is treated as within tolerance. A difference at or above 5 bps is a failed control.
 
-When the gate fails, attribution output is withheld and the exception is logged as a QA break. In a client-reporting context, attribution that does not reconcile to reported active return should not be published.
+When the gate fails, attribution output is withheld and the exception is logged as a QA break. In this reporting workflow simulation, attribution that does not reconcile to reported active return should remain under review rather than be presented as final.
 
 The same control framework also checks weight integrity and sector-to-portfolio return consistency.
 
@@ -61,6 +61,6 @@ QA breaks are classified by type and severity. Current break categories include:
 
 Severity levels are used as follows:
 
-- `HIGH` = publication should stop until resolved
+- `HIGH` = results should be treated as under review until resolved
 - `MEDIUM` = material exception that requires review
 - `LOW` = informational or non-blocking exception

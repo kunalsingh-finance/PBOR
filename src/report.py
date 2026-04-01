@@ -62,8 +62,8 @@ def _portfolio_summary(monthly_returns: pd.DataFrame) -> str:
 
 def _dataset_label(daily_returns: pd.DataFrame, attribution: pd.DataFrame) -> str:
     if len(daily_returns) <= 31 or len(attribution) <= 10:
-        return "Demo dataset"
-    return "Production-scale dataset"
+        return "Bundled sample dataset"
+    return "Public market data sample"
 
 
 def _window_rows(daily_returns: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
@@ -260,7 +260,7 @@ def _draw_card(
 
 def _analyst_commentary(month_attr: pd.DataFrame, recon: dict[str, object], cash_return_source: str) -> str:
     if not recon["available"] or not recon["within_tolerance"] or month_attr.empty:
-        return "Analyst commentary: Attribution withheld pending reconciliation; performance remains preliminary."
+        return "Analyst commentary: Attribution withheld pending reconciliation; results remain under review."
     selection_bps = float(month_attr["selection_effect"].sum()) * 10000.0
     interaction_bps = float(month_attr["interaction_effect"].sum()) * 10000.0
     allocation_bps = float(month_attr["allocation_effect"].sum()) * 10000.0
@@ -275,14 +275,14 @@ def _analyst_commentary(month_attr: pd.DataFrame, recon: dict[str, object], cash
 
 def _control_lines(recon: dict[str, object], tolerance_bps: float) -> tuple[str, list[str]]:
     if not recon["available"]:
-        return "Status: Data Under Review", ["Controls unavailable for this run."]
+        return "Status: Under Review", ["Controls unavailable for this run."]
 
     diff_ok = float(recon["diff_bps"]) < tolerance_bps
     weights_ok = bool(recon["weights_ok"])
     sector_ok = bool(recon["portfolio_return_ok"])
     all_ok = diff_ok and weights_ok and sector_ok
 
-    status = "Status: Validated" if all_ok else "Status: Data Under Review"
+    status = "Status: Controls Passed" if all_ok else "Status: Under Review"
     lines = [
         f"Attribution-Active diff: {float(recon['diff_bps']):.1f} bps",
         f"Sum weights: Wp={float(recon['w_p_sum']):.2f}, Wb={float(recon['w_b_sum']):.2f}",
@@ -597,14 +597,18 @@ def generate_tear_sheet(
     latest_month_row = (
         display_monthly_returns.sort_values("month_end").iloc[-1] if not display_monthly_returns.empty else None
     )
-    status_value = "Validated" if "Validated" in status_line else "Under Review"
-    status_color = POSITIVE if status_value == "Validated" else WARNING
+    status_value = "Controls Passed" if "Controls Passed" in status_line else "Under Review"
+    status_color = POSITIVE if status_value == "Controls Passed" else WARNING
     active_value = (
         _pct(float(latest_month_row["active_return"])) if latest_month_row is not None else "N/A"
     )
     tracking_error_value = _fmt_pct_metric(float(risk["tracking_error"]))
     break_count_value = str(int(len(display_breaks)))
-    portfolio_note = "Portfolio view from multi-portfolio run" if multi_portfolio else "Single portfolio run"
+    portfolio_note = (
+        "Personal project sample from a multi-portfolio run"
+        if multi_portfolio
+        else "Personal project sample from a single-portfolio run"
+    )
 
     fig = plt.figure(figsize=(13.4, 8.6), constrained_layout=True)
     fig.patch.set_facecolor(FIG_BG)
@@ -692,11 +696,11 @@ def generate_tear_sheet(
         va="bottom",
     )
 
-    if "Data Under Review" in status_line:
+    if "Under Review" in status_line:
         ax_title.text(
             0.96,
             0.92,
-            "PRELIMINARY - DO NOT DISTRIBUTE",
+            "FOR REVIEW ONLY",
             fontsize=10,
             weight="bold",
             color=NEGATIVE,

@@ -44,7 +44,7 @@ For each month, attribution is reconciled to active return:
 
 `diff_bps = abs(sum(active_effect_sector) - active_return) * 10,000`
 
-Publishing rule:
+Review rule:
 
 - Pass: `diff_bps < 5`
 - Fail: attribution visuals are withheld until reconciliation is within tolerance

@@ -25,8 +25,8 @@ def _bps(value: float) -> str:
 
 def _dataset_label(daily_returns: pd.DataFrame, attribution: pd.DataFrame) -> str:
     if len(daily_returns) <= 31 or len(attribution) <= 10:
-        return "Demo dataset"
-    return "Production-scale dataset"
+        return "Bundled sample dataset"
+    return "Public market data sample"
 
 
 def _window_rows(daily_returns: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
@@ -135,7 +135,7 @@ def _json_float_or_none(value: float) -> float | None:
 
 def _analyst_commentary(month_attr: pd.DataFrame, recon: dict[str, object], cash_return_source: str) -> str:
     if not recon["available"] or not recon["within_tolerance"] or month_attr.empty:
-        return "Attribution withheld pending reconciliation; performance remains preliminary."
+        return "Attribution withheld pending reconciliation; results remain under review."
     selection_bps = float(month_attr["selection_effect"].sum()) * 10000.0
     interaction_bps = float(month_attr["interaction_effect"].sum()) * 10000.0
     allocation_bps = float(month_attr["allocation_effect"].sum()) * 10000.0
@@ -223,7 +223,7 @@ def _build_onepager_markdown(
     if market_last_closed:
         lines.append(f"Market last closed session: {market_last_closed}")
     lines.append(f"Dataset: {_dataset_label(daily_returns=daily_returns, attribution=attribution)}")
-    lines.append("Data note: market data + synthetic transaction ledger for demonstration.")
+    lines.append("Data note: sample market data + synthetic transaction ledger for personal-project demonstration.")
     lines.append(
         "Analysis window: "
         f"{analysis_window['start']} to {analysis_window['end']} "
@@ -283,7 +283,7 @@ def _build_onepager_markdown(
         weights_ok = bool(recon["weights_ok"])
         sector_ok = bool(recon["portfolio_return_ok"])
         all_ok = diff_ok and weights_ok and sector_ok
-        status_line = "Validated" if all_ok else "Data Under Review"
+        status_line = "Controls Passed" if all_ok else "Under Review"
         lines.append(f"- Status: `{status_line}`")
         lines.append(f"- Attribution-Active diff: `{float(recon['diff_bps']):.1f} bps`")
         lines.append(f"- Sum weights: `Wp={float(recon['w_p_sum']):.2f}`, `Wb={float(recon['w_b_sum']):.2f}`")
@@ -408,7 +408,7 @@ def _build_onepager_markdown(
     lines.append("- `breaks.csv`: detected data/logic breaks with severity and notes.")
     lines.append("- `qa_ingest_summary.csv`: ingestion validation checks.")
     lines.append("- `report*.xlsx`: workbook with Summary, Returns, Attribution, and Breaks tabs.")
-    lines.append("- `onepager.pdf`: one-page executive tear sheet.")
+    lines.append("- `onepager.pdf`: one-page summary tear sheet.")
     return "\n".join(lines) + "\n"
 
 
@@ -595,7 +595,7 @@ def _export_controls_table_image(
         cell.set_edgecolor("#6D7785")
         if r == 0:
             cell.set_facecolor("#F1F5F9")
-    status = "Validated" if bool(recon_latest.get("within_tolerance", False)) else "Data Under Review"
+    status = "Controls Passed" if bool(recon_latest.get("within_tolerance", False)) else "Under Review"
     ax.set_title(f"Controls Check ({status})", fontsize=11, loc="left", pad=6)
     fig.savefig(controls_path, dpi=180)
     plt.close(fig)
@@ -694,9 +694,9 @@ def export_outputs(
         "generated_at_et": generated_at_et,
         "market_last_closed_session": market_last_closed,
         "reconciliation_tolerance_bps": float(reconciliation_tolerance_bps),
-        "data_status": "Validated" if bool(recon_latest["within_tolerance"]) else "Data Under Review",
+        "data_status": "Controls Passed" if bool(recon_latest["within_tolerance"]) else "Under Review",
         "dataset_label": _dataset_label(daily_returns=daily_returns, attribution=attribution),
-        "data_note": "market data + synthetic transaction ledger for demonstration",
+        "data_note": "sample market data + synthetic transaction ledger for personal-project demonstration",
         "analysis_window": {
             "start": str(analysis_window["start"]),
             "end": str(analysis_window["end"]),

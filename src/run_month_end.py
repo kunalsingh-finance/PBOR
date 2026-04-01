@@ -95,7 +95,7 @@ def run_month_end(
                         f"{reconciliation_tolerance_bps:.1f} bps."
                     ),
                     "root_cause": "Attribution and performance return bases are not aligned.",
-                    "resolution": "Align attribution window and arithmetic return definition before publishing.",
+                    "resolution": "Align attribution window and arithmetic return definition before using the sample output pack.",
                 }
             ]
             if not recon_latest["portfolio_return_ok"]:
