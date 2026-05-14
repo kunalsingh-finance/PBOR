@@ -134,6 +134,14 @@ Each month-end run writes a dated output folder under `outputs/YYYY-MM/` plus an
 - GitHub Actions runs the synthetic demo verification flow on push and pull request.
 - Synthetic data only; no confidential client, custodian, bank, or trade data.
 
+## What to Screenshot for Recruiters
+
+1. Sign-Off Control Center
+2. Auto Reconciliation exception queue
+3. `SignOffSummary` Excel sheet
+4. `AutoReconExceptions` Excel sheet
+5. README project overview
+
 ## Interview Talking Point
 
 I built a Python-based portfolio reconciliation and reporting control engine that rebuilds positions from transactions, calculates performance and attribution, compares PBOR-style records against custodian and bank-style records, classifies breaks, tracks exception lifecycle and SLA aging, and generates a sign-off summary to determine whether the month-end reporting pack is ready for review.

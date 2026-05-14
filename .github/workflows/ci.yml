@@ -30,5 +30,8 @@ jobs:
       - name: Run synthetic month-end demo
         run: python -m src.run_month_end --asof 2026-01-10 --recon-data-dir data/recon_demo
 
+      - name: Run full demo script
+        run: python scripts/run_full_demo.py
+
       - name: Verify outputs
         run: python scripts/verify_demo_outputs.py
