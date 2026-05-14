@@ -16,6 +16,7 @@ from .qa import run_break_checks
 from .reconciliation import latest_reconciliation
 from .report import generate_tear_sheet
 from .returns import compute_returns
+from .signoff import build_signoff_summary
 
 
 def _replace_table(conn: sqlite3.Connection, table_name: str, frame: pd.DataFrame) -> None:
@@ -31,13 +32,12 @@ def _has_high_severity(frame: pd.DataFrame) -> bool:
     return bool(frame["severity"].astype(str).str.upper().eq("HIGH").any())
 
 
-def _attribution_ready(recon_latest: dict[str, object]) -> bool:
-    return bool(
-        recon_latest.get("available")
-        and recon_latest.get("within_tolerance")
-        and recon_latest.get("weights_ok", True)
-        and recon_latest.get("portfolio_return_ok", True)
-    )
+def _open_recon_mask(frame: pd.DataFrame) -> pd.Series:
+    if frame.empty:
+        return pd.Series(dtype=bool)
+    if "workflow_status" in frame.columns:
+        return frame["workflow_status"].astype(str).str.upper().ne("CLOSED")
+    return ~frame["status"].astype(str).isin(NON_EXCEPTION_STATUSES)
 
 
 def _recon_metrics(recon_exceptions: pd.DataFrame) -> dict[str, object]:
@@ -59,6 +59,42 @@ def _recon_metrics(recon_exceptions: pd.DataFrame) -> dict[str, object]:
         "recon_high_severity_exceptions": high_severity,
         "recon_match_rate": matched / total if total else 0.0,
     }
+
+
+def _signoff_ready(signoff_summary: pd.DataFrame) -> bool:
+    if signoff_summary.empty:
+        return False
+    final = signoff_summary[signoff_summary["control_area"] == "Final Reporting Sign-Off"]
+    if final.empty:
+        return False
+    return bool(final.iloc[0]["ready_for_signoff"])
+
+
+def _failed_control_areas(signoff_summary: pd.DataFrame) -> list[str]:
+    if signoff_summary.empty:
+        return []
+    failed = signoff_summary[
+        (signoff_summary["status"] == "FAIL")
+        & (signoff_summary["control_area"] != "Final Reporting Sign-Off")
+    ]
+    return [str(area) for area in failed["control_area"].tolist()]
+
+
+def _open_high_severity_recon_count(recon_exceptions: pd.DataFrame) -> int:
+    if recon_exceptions.empty or "severity" not in recon_exceptions.columns:
+        return 0
+    return int(
+        (
+            recon_exceptions["severity"].astype(str).str.upper().eq("HIGH")
+            & _open_recon_mask(recon_exceptions)
+        ).sum()
+    )
+
+
+def _sla_count(recon_exceptions: pd.DataFrame, bucket: str) -> int:
+    if recon_exceptions.empty or "sla_bucket" not in recon_exceptions.columns:
+        return 0
+    return int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq(bucket).sum())
 
 
 def run_month_end(
@@ -165,11 +201,17 @@ def run_month_end(
         else:
             recon_exceptions = pd.DataFrame(columns=RECON_OUTPUT_COLUMNS)
         recon_run_metrics = _recon_metrics(recon_exceptions)
-        ready_for_signoff = bool(
-            _attribution_ready(recon_latest)
-            and not _has_high_severity(breaks)
-            and not _has_high_severity(recon_exceptions)
+        signoff_summary = build_signoff_summary(
+            breaks=breaks,
+            recon_exceptions=recon_exceptions,
+            recon_latest=recon_latest,
         )
+        ready_for_signoff = _signoff_ready(signoff_summary)
+        open_high_recon = _open_high_severity_recon_count(recon_exceptions)
+        open_high_qa = int(breaks["severity"].astype(str).str.upper().eq("HIGH").sum()) if "severity" in breaks.columns else 0
+        failed_control_areas = _failed_control_areas(signoff_summary)
+        sla_breached = _sla_count(recon_exceptions, "BREACHED")
+        sla_watchlist = _sla_count(recon_exceptions, "WATCHLIST")
 
         _replace_table(conn, "pbor_daily_positions", positions)
         _replace_table(conn, "pbor_daily_returns", daily_returns)
@@ -188,6 +230,7 @@ def run_month_end(
         _replace_table(conn, "pbor_attribution_monthly", attribution)
         _replace_table(conn, "pbor_breaks", breaks)
         _replace_table(conn, "pbor_recon_exceptions", recon_exceptions)
+        _replace_table(conn, "pbor_signoff_summary", signoff_summary)
 
         date_ctx = derive_date_context(
             daily_returns=daily_returns,
@@ -213,6 +256,7 @@ def run_month_end(
             breaks=breaks,
             ingest_qa=ingest_qa,
             recon_exceptions=recon_exceptions,
+            signoff_summary=signoff_summary,
             reconciliation_tolerance_bps=reconciliation_tolerance_bps,
             cash_return_source=cash_return_source,
             ready_for_signoff=ready_for_signoff,
@@ -246,6 +290,12 @@ def run_month_end(
             "attribution_reconciliation_tolerance_bps": reconciliation_tolerance_bps,
             **recon_run_metrics,
             "ready_for_signoff": ready_for_signoff,
+            "signoff_ready": ready_for_signoff,
+            "failed_control_areas": failed_control_areas,
+            "open_high_severity_recon_exceptions": open_high_recon,
+            "open_high_severity_qa_breaks": open_high_qa,
+            "sla_breached_recon_exceptions": sla_breached,
+            "watchlist_recon_exceptions": sla_watchlist,
         }
     finally:
         conn.close()

@@ -141,7 +141,9 @@ CREATE TABLE IF NOT EXISTS pbor_recon_exceptions (
     currency TEXT,
     break_type TEXT NOT NULL,
     status TEXT NOT NULL,
+    workflow_status TEXT,
     severity TEXT NOT NULL,
+    sla_bucket TEXT,
     internal_quantity REAL,
     external_quantity REAL,
     quantity_diff REAL,
@@ -156,7 +158,19 @@ CREATE TABLE IF NOT EXISTS pbor_recon_exceptions (
     cash_diff REAL,
     root_cause TEXT,
     resolution_note TEXT,
+    action_required TEXT,
     owner TEXT,
     age_days INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pbor_signoff_summary (
+    control_area TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    high_severity_count INTEGER NOT NULL,
+    open_exception_count INTEGER NOT NULL,
+    ready_for_signoff INTEGER NOT NULL,
+    review_note TEXT,
+    action_required TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

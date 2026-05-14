@@ -14,6 +14,7 @@ from pbor.date_source import derive_date_context
 from .auto_recon import NON_EXCEPTION_STATUSES, RECON_OUTPUT_COLUMNS
 from .qa import flow_summary_stats, format_flow_summary_line
 from .reconciliation import attribution_reconciliation, latest_reconciliation
+from .signoff import SIGNOFF_COLUMNS
 
 
 def _pct(value: float) -> str:
@@ -174,6 +175,24 @@ def _prepare_recon_exceptions(recon_exceptions: pd.DataFrame | None) -> pd.DataF
     return frame[RECON_OUTPUT_COLUMNS].copy()
 
 
+def _prepare_signoff_summary(signoff_summary: pd.DataFrame | None) -> pd.DataFrame:
+    if signoff_summary is None or signoff_summary.empty:
+        return pd.DataFrame(columns=SIGNOFF_COLUMNS)
+    frame = signoff_summary.copy()
+    for column in SIGNOFF_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame[SIGNOFF_COLUMNS].copy()
+
+
+def _open_recon_mask(frame: pd.DataFrame) -> pd.Series:
+    if frame.empty:
+        return pd.Series(dtype=bool)
+    if "workflow_status" in frame.columns:
+        return frame["workflow_status"].astype(str).str.upper().ne("CLOSED")
+    return ~frame["status"].astype(str).isin(NON_EXCEPTION_STATUSES)
+
+
 def _recon_summary_metrics(recon_exceptions: pd.DataFrame, ready_for_signoff: bool) -> dict[str, object]:
     if recon_exceptions.empty:
         return {
@@ -218,6 +237,54 @@ def _recon_summary_metrics(recon_exceptions: pd.DataFrame, ready_for_signoff: bo
         "recon_match_rate": matched / total if total else 0.0,
         "ready_for_signoff": bool(ready_for_signoff),
     }
+
+
+def _signoff_summary_metrics(
+    signoff_summary: pd.DataFrame,
+    recon_exceptions: pd.DataFrame,
+    breaks: pd.DataFrame,
+    ready_for_signoff: bool,
+) -> dict[str, object]:
+    final = signoff_summary[signoff_summary["control_area"] == "Final Reporting Sign-Off"] if not signoff_summary.empty else pd.DataFrame()
+    signoff_ready = bool(final.iloc[0]["ready_for_signoff"]) if not final.empty else bool(ready_for_signoff)
+    failed = (
+        signoff_summary[
+            (signoff_summary["status"].astype(str) == "FAIL")
+            & (signoff_summary["control_area"] != "Final Reporting Sign-Off")
+        ]
+        if not signoff_summary.empty
+        else pd.DataFrame()
+    )
+    open_mask = _open_recon_mask(recon_exceptions)
+    open_high_recon = (
+        int((recon_exceptions["severity"].astype(str).str.upper().eq("HIGH") & open_mask).sum())
+        if not recon_exceptions.empty and "severity" in recon_exceptions.columns
+        else 0
+    )
+    open_high_qa = (
+        int(breaks["severity"].astype(str).str.upper().eq("HIGH").sum())
+        if not breaks.empty and "severity" in breaks.columns
+        else 0
+    )
+    sla_breached = (
+        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("BREACHED").sum())
+        if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
+        else 0
+    )
+    watchlist = (
+        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("WATCHLIST").sum())
+        if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
+        else 0
+    )
+    return {
+        "signoff_ready": signoff_ready,
+        "failed_control_areas": [str(area) for area in failed.get("control_area", pd.Series(dtype=object)).tolist()],
+        "open_high_severity_recon_exceptions": open_high_recon,
+        "open_high_severity_qa_breaks": open_high_qa,
+        "sla_breached_recon_exceptions": sla_breached,
+        "watchlist_recon_exceptions": watchlist,
+    }
+
 
 
 def _outlier_explanations(breaks: pd.DataFrame) -> list[str]:
@@ -465,7 +532,8 @@ def _build_onepager_markdown(
     lines.append("- `breaks.csv`: detected data/logic breaks with severity and notes.")
     lines.append("- `qa_ingest_summary.csv`: ingestion validation checks.")
     lines.append("- `recon_exceptions.csv`: optional PBOR-vs-custodian reconciliation queue.")
-    lines.append("- `report*.xlsx`: workbook with Summary, Returns, Attribution, Breaks, and AutoReconExceptions tabs.")
+    lines.append("- `signoff_summary.csv`: control-area pass/fail and reporting readiness summary.")
+    lines.append("- `report*.xlsx`: workbook with Summary, Returns, Attribution, Breaks, AutoReconExceptions, and SignOffSummary tabs.")
     lines.append("- `onepager.pdf`: one-page summary tear sheet.")
     return "\n".join(lines) + "\n"
 
@@ -480,6 +548,7 @@ def _build_summary_table(
     recon_latest: dict[str, object],
     cash_return_source: str,
     recon_exceptions: pd.DataFrame | None = None,
+    signoff_summary: pd.DataFrame | None = None,
     ready_for_signoff: bool = False,
     date_context: dict[str, object] | None = None,
 ) -> pd.DataFrame:
@@ -505,6 +574,13 @@ def _build_summary_table(
     )
     auto_recon = _prepare_recon_exceptions(recon_exceptions)
     auto_recon_metrics = _recon_summary_metrics(auto_recon, ready_for_signoff=ready_for_signoff)
+    signoff = _prepare_signoff_summary(signoff_summary)
+    signoff_metrics = _signoff_summary_metrics(
+        signoff_summary=signoff,
+        recon_exceptions=auto_recon,
+        breaks=breaks,
+        ready_for_signoff=ready_for_signoff,
+    )
     rows: list[dict[str, object]] = [
         {"metric": "asof_date", "value": asof_effective},
         {"metric": "data_asof_date", "value": data_asof_date},
@@ -539,6 +615,12 @@ def _build_summary_table(
             {"metric": "high_severity_recon_exceptions", "value": auto_recon_metrics["high_severity_recon_exceptions"]},
             {"metric": "recon_match_rate", "value": auto_recon_metrics["recon_match_rate"]},
             {"metric": "ready_for_signoff", "value": auto_recon_metrics["ready_for_signoff"]},
+            {"metric": "signoff_ready", "value": signoff_metrics["signoff_ready"]},
+            {"metric": "failed_control_areas", "value": ", ".join(signoff_metrics["failed_control_areas"])},
+            {"metric": "open_high_severity_recon_exceptions", "value": signoff_metrics["open_high_severity_recon_exceptions"]},
+            {"metric": "open_high_severity_qa_breaks", "value": signoff_metrics["open_high_severity_qa_breaks"]},
+            {"metric": "sla_breached_recon_exceptions", "value": signoff_metrics["sla_breached_recon_exceptions"]},
+            {"metric": "watchlist_recon_exceptions", "value": signoff_metrics["watchlist_recon_exceptions"]},
             {"metric": "ingest_fail_checks", "value": int((ingest_qa["status"] == "FAIL").sum())},
             {"metric": "return_outliers", "value": _break_count(breaks, "RETURN_OUTLIER")},
             {"metric": "nav_jump_zero_flow_flags", "value": _break_count(breaks, "NAV_JUMP_ZERO_FLOW")},
@@ -593,10 +675,12 @@ def _export_excel_report(
     recon_latest: dict[str, object],
     cash_return_source: str,
     recon_exceptions: pd.DataFrame | None = None,
+    signoff_summary: pd.DataFrame | None = None,
     ready_for_signoff: bool = False,
     date_context: dict[str, object] | None = None,
 ) -> Path:
     auto_recon = _prepare_recon_exceptions(recon_exceptions)
+    signoff = _prepare_signoff_summary(signoff_summary)
     summary = _build_summary_table(
         asof_date=asof_date,
         daily_returns=daily_returns,
@@ -607,6 +691,7 @@ def _export_excel_report(
         recon_latest=recon_latest,
         cash_return_source=cash_return_source,
         recon_exceptions=auto_recon,
+        signoff_summary=signoff,
         ready_for_signoff=ready_for_signoff,
         date_context=date_context,
     )
@@ -621,6 +706,7 @@ def _export_excel_report(
             breaks.to_excel(writer, index=False, sheet_name="Breaks")
             ingest_qa.to_excel(writer, index=False, sheet_name="IngestQA")
             auto_recon.to_excel(writer, index=False, sheet_name="AutoReconExceptions")
+            signoff.to_excel(writer, index=False, sheet_name="SignOffSummary")
 
             _autofit_columns(writer, "Summary", summary)
             _autofit_columns(writer, "MonthlyReturns", monthly_returns)
@@ -630,6 +716,7 @@ def _export_excel_report(
             _autofit_columns(writer, "Breaks", breaks)
             _autofit_columns(writer, "IngestQA", ingest_qa)
             _autofit_columns(writer, "AutoReconExceptions", auto_recon)
+            _autofit_columns(writer, "SignOffSummary", signoff)
 
     report_path = target / "report.xlsx"
     try:
@@ -685,6 +772,7 @@ def export_outputs(
     breaks: pd.DataFrame,
     ingest_qa: pd.DataFrame,
     recon_exceptions: pd.DataFrame | None = None,
+    signoff_summary: pd.DataFrame | None = None,
     reconciliation_tolerance_bps: float = 5.0,
     cash_return_source: str = "0%",
     ready_for_signoff: bool = False,
@@ -713,7 +801,14 @@ def export_outputs(
     target = output_root / month_folder
     target.mkdir(parents=True, exist_ok=True)
     auto_recon = _prepare_recon_exceptions(recon_exceptions)
+    signoff = _prepare_signoff_summary(signoff_summary)
     auto_recon_metrics = _recon_summary_metrics(auto_recon, ready_for_signoff=ready_for_signoff)
+    signoff_metrics = _signoff_summary_metrics(
+        signoff_summary=signoff,
+        recon_exceptions=auto_recon,
+        breaks=breaks,
+        ready_for_signoff=ready_for_signoff,
+    )
 
     attribution_recon = attribution_reconciliation(
         monthly_returns=monthly_returns,
@@ -733,6 +828,7 @@ def export_outputs(
     breaks.to_csv(target / "breaks.csv", index=False)
     ingest_qa.to_csv(target / "qa_ingest_summary.csv", index=False)
     auto_recon.to_csv(target / "recon_exceptions.csv", index=False)
+    signoff.to_csv(target / "signoff_summary.csv", index=False)
 
     onepager_md = _build_onepager_markdown(
         asof_date=asof_effective,
@@ -758,6 +854,7 @@ def export_outputs(
         recon_latest=recon_latest,
         cash_return_source=cash_return_source,
         recon_exceptions=auto_recon,
+        signoff_summary=signoff,
         ready_for_signoff=ready_for_signoff,
         date_context=window_ctx,
     )
@@ -786,6 +883,12 @@ def export_outputs(
         "market_value_break_amount": auto_recon_metrics["market_value_break_amount"],
         "recon_match_rate": auto_recon_metrics["recon_match_rate"],
         "ready_for_signoff": auto_recon_metrics["ready_for_signoff"],
+        "signoff_ready": signoff_metrics["signoff_ready"],
+        "failed_control_areas": signoff_metrics["failed_control_areas"],
+        "open_high_severity_recon_exceptions": signoff_metrics["open_high_severity_recon_exceptions"],
+        "open_high_severity_qa_breaks": signoff_metrics["open_high_severity_qa_breaks"],
+        "sla_breached_recon_exceptions": signoff_metrics["sla_breached_recon_exceptions"],
+        "watchlist_recon_exceptions": signoff_metrics["watchlist_recon_exceptions"],
         "analysis_window": {
             "start": str(analysis_window["start"]),
             "end": str(analysis_window["end"]),
@@ -852,6 +955,7 @@ def export_outputs(
             "breaks.csv",
             "qa_ingest_summary.csv",
             "recon_exceptions.csv",
+            "signoff_summary.csv",
             "onepager.md",
             report_workbook.name,
             controls_table_image.name,

@@ -13,8 +13,11 @@ Portfolio Reconciliation & Reporting Control Engine runs in this sequence:
 9. Run break checks and store exceptions in `pbor_breaks`.
 10. Optionally run PBOR-vs-custodian and ledger-vs-bank reconciliation from synthetic operational records.
 11. Store reconciliation exceptions in `pbor_recon_exceptions`.
-12. Export month-end artifacts to `outputs/YYYY-MM/`.
-13. Generate a one-page PDF tear sheet, Excel workbook, and PNG chart for reporting.
+12. Track workflow status, SLA bucket, and action required for each reconciliation record.
+13. Generate a sign-off summary across attribution, QA, PBOR/custodian, and cash controls.
+14. Store sign-off readiness in `pbor_signoff_summary`.
+15. Export month-end artifacts to `outputs/YYYY-MM/`.
+16. Generate a one-page PDF tear sheet, Excel workbook, and PNG chart for reporting.
 
 Core run command:
 
@@ -26,7 +29,7 @@ Reconciliation demo:
 
 ```bash
 python scripts/build_recon_demo_data.py
-python -m src.run_month_end --asof 2026-01-31 --recon-data-dir data/recon_demo
+python -m src.run_month_end --asof 2026-01-10 --recon-data-dir data/recon_demo
 ```
 
 Results walkthrough:

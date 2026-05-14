@@ -108,3 +108,38 @@ Severity logic is designed for review triage:
 Root cause and resolution notes are mapped from the break type. Quantity breaks point to settlement timing, booking, or unmatched transaction review. Price breaks point to pricing-source or stale-price review. Cash breaks point to ledger, bank activity, fees, dividends, wires, and interest timing. Missing-record breaks point to feed completeness, PBOR booking, and security setup.
 
 Sign-off readiness requires attribution reconciliation to pass, no high-severity QA breaks, and no high-severity auto-reconciliation exceptions. If any of those controls fails, the reporting pack should remain under review.
+
+## Exception Lifecycle and Sign-Off Logic
+
+The reconciliation workflow separates technical status from workflow status. Technical status describes the result of the comparison, such as `MATCHED`, `WITHIN_TOLERANCE`, `QUANTITY_BREAK`, `PRICE_BREAK`, `MARKET_VALUE_BREAK`, missing-record breaks, or `CASH_BREAK`. Workflow status describes whether that item still requires operational review.
+
+Lifecycle rules:
+
+- `MATCHED` and `WITHIN_TOLERANCE` records are `CLOSED`
+- all true breaks are `OPEN`
+
+SLA buckets are derived from `age_days`:
+
+- `CURRENT` = open break aged 0-1 days
+- `WATCHLIST` = open break aged 2-3 days
+- `BREACHED` = open break aged 4 or more days
+- `N/A` = matched or within-tolerance record
+
+The `action_required` field translates the break type into a practical review step. Quantity breaks point to trade blotter, settlement, and custodian booking review. Price breaks point to pricing source and stale price checks. Cash breaks point to ledger, bank activity, fees, dividends, wires, and interest review.
+
+The sign-off summary evaluates five control areas:
+
+- Attribution Reconciliation
+- QA Controls
+- PBOR vs Custodian Positions
+- Cash Reconciliation
+- Final Reporting Sign-Off
+
+Final reporting sign-off requires all four underlying control areas to pass:
+
+- Attribution Reconciliation `PASS`
+- QA Controls `PASS`
+- PBOR vs Custodian Positions `PASS`
+- Cash Reconciliation `PASS`
+
+If any control area fails, the reporting pack remains under review until the failed controls are resolved or documented.

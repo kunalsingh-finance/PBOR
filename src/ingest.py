@@ -81,8 +81,49 @@ def initialize_db(db_path: Path, ddl_path: Path, views_path: Path) -> sqlite3.Co
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(ddl_path.read_text(encoding="utf-8"))
+    _apply_migrations(conn)
     conn.executescript(views_path.read_text(encoding="utf-8"))
     return conn
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _ensure_columns(conn: sqlite3.Connection, table_name: str, columns: dict[str, str]) -> None:
+    existing = _table_columns(conn, table_name)
+    if not existing:
+        return
+    for column_name, column_type in columns.items():
+        if column_name not in existing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    _ensure_columns(
+        conn,
+        "pbor_recon_exceptions",
+        {
+            "workflow_status": "TEXT",
+            "sla_bucket": "TEXT",
+            "action_required": "TEXT",
+        },
+    )
+    _ensure_columns(
+        conn,
+        "pbor_signoff_summary",
+        {
+            "control_area": "TEXT",
+            "status": "TEXT",
+            "high_severity_count": "INTEGER",
+            "open_exception_count": "INTEGER",
+            "ready_for_signoff": "INTEGER",
+            "review_note": "TEXT",
+            "action_required": "TEXT",
+        },
+    )
+    conn.commit()
 
 
 def _reset_tables(conn: sqlite3.Connection, table_names: list[str]) -> None:

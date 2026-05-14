@@ -28,7 +28,9 @@ RECON_OUTPUT_COLUMNS = [
     "currency",
     "break_type",
     "status",
+    "workflow_status",
     "severity",
+    "sla_bucket",
     "internal_quantity",
     "external_quantity",
     "quantity_diff",
@@ -43,6 +45,7 @@ RECON_OUTPUT_COLUMNS = [
     "cash_diff",
     "root_cause",
     "resolution_note",
+    "action_required",
     "owner",
     "age_days",
 ]
@@ -73,6 +76,19 @@ RESOLUTION_NOTES = {
     "MISSING_IN_INTERNAL_CASH": "Review cash ledger posting and internal account setup",
     "MATCHED": "No action required",
     "WITHIN_TOLERANCE": "Monitor only",
+}
+
+ACTION_REQUIRED = {
+    "QUANTITY_BREAK": "Review trade blotter, settlement status, and custodian booking",
+    "PRICE_BREAK": "Validate pricing source and stale price logic",
+    "MARKET_VALUE_BREAK": "Review quantity, price, FX, and valuation timing",
+    "MISSING_IN_CUSTODIAN": "Confirm custodian feed completeness and settlement status",
+    "MISSING_IN_INTERNAL": "Review PBOR booking and security setup",
+    "CASH_BREAK": "Review cash ledger, bank activity, fees, dividends, wires, and interest",
+    "MISSING_IN_BANK": "Confirm bank feed completeness and account mapping",
+    "MISSING_IN_INTERNAL_CASH": "Review internal cash ledger posting",
+    "MATCHED": "No action required",
+    "WITHIN_TOLERANCE": "No action required",
 }
 
 
@@ -299,6 +315,24 @@ def _severity(row: pd.Series) -> str:
     return "LOW"
 
 
+def _workflow_status(status: str) -> str:
+    return "CLOSED" if status in NON_EXCEPTION_STATUSES else "OPEN"
+
+
+def _sla_bucket(status: str, age_days: int) -> str:
+    if status in NON_EXCEPTION_STATUSES:
+        return "N/A"
+    if age_days <= 1:
+        return "CURRENT"
+    if age_days <= 3:
+        return "WATCHLIST"
+    return "BREACHED"
+
+
+def _action_required(status: str) -> str:
+    return ACTION_REQUIRED.get(status, "Review exception and document resolution")
+
+
 def _enrich_recon_rows(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     out["break_type"] = out["status"].map(_break_type)
@@ -307,6 +341,9 @@ def _enrich_recon_rows(frame: pd.DataFrame) -> pd.DataFrame:
     out["resolution_note"] = out["status"].map(RESOLUTION_NOTES).fillna("Review and document resolution")
     out["owner"] = "Ops Analyst"
     out["age_days"] = 0
+    out["workflow_status"] = out["status"].map(_workflow_status)
+    out["sla_bucket"] = out.apply(lambda row: _sla_bucket(str(row["status"]), int(row["age_days"])), axis=1)
+    out["action_required"] = out["status"].map(_action_required)
     for column in RECON_OUTPUT_COLUMNS:
         if column not in out.columns:
             out[column] = pd.NA

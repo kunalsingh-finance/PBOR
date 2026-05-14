@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-ASOF_DATE = "2026-01-31"
+ASOF_DATE = "2026-01-10"
 PORTFOLIO_ID = "PF_DEMO"
 ACCOUNT_ID = "ACC_MAIN"
 
@@ -100,7 +100,7 @@ def main() -> None:
     for break_name in summary["intentional_breaks"]:
         print(f"  - {break_name}")
     print("Next command:")
-    print("python -m src.run_month_end --asof 2026-01-31 --recon-data-dir data/recon_demo")
+    print("python -m src.run_month_end --asof 2026-01-10 --recon-data-dir data/recon_demo")
 
 
 if __name__ == "__main__":

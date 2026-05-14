@@ -20,7 +20,7 @@ POLICY = {
 
 def _position(security_id: str, quantity: float, price: float, market_value: float | None = None) -> dict[str, object]:
     return {
-        "asof_date": "2026-01-31",
+        "asof_date": "2026-01-10",
         "portfolio_id": "PF_TEST",
         "account_id": "ACC_TEST",
         "security_id": security_id,
@@ -33,7 +33,7 @@ def _position(security_id: str, quantity: float, price: float, market_value: flo
 
 def _cash(currency: str, balance: float) -> dict[str, object]:
     return {
-        "asof_date": "2026-01-31",
+        "asof_date": "2026-01-10",
         "portfolio_id": "PF_TEST",
         "account_id": "ACC_TEST",
         "currency": currency,
@@ -133,6 +133,85 @@ def test_run_auto_recon_returns_combined_position_and_cash_records(tmp_path: Pat
     )
 
 
+def test_matched_gets_workflow_status_closed(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    matched = result[result["status"] == "MATCHED"]
+
+    assert not matched.empty
+    assert set(matched["workflow_status"]) == {"CLOSED"}
+
+
+def test_within_tolerance_gets_workflow_status_closed(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+    internal_cash = pd.read_csv(tmp_path / "internal_cash.csv")
+    bank_cash = internal_cash.copy()
+    bank_cash["cash_balance"] = bank_cash["cash_balance"] - 25
+    bank_cash.to_csv(tmp_path / "bank_cash.csv", index=False)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    within = result[result["status"] == "WITHIN_TOLERANCE"]
+
+    assert not within.empty
+    assert set(within["workflow_status"]) == {"CLOSED"}
+
+
+def test_quantity_break_gets_workflow_status_open(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    row = result[result["status"] == "QUANTITY_BREAK"].iloc[0]
+
+    assert row["workflow_status"] == "OPEN"
+
+
+def test_cash_break_gets_workflow_status_open(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    row = result[result["status"] == "CASH_BREAK"].iloc[0]
+
+    assert row["workflow_status"] == "OPEN"
+
+
+def test_age_days_zero_break_gets_sla_bucket_current(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    row = result[result["status"] == "QUANTITY_BREAK"].iloc[0]
+
+    assert row["age_days"] == 0
+    assert row["sla_bucket"] == "CURRENT"
+
+
+def test_matched_record_gets_sla_bucket_not_applicable(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    row = result[result["status"] == "MATCHED"].iloc[0]
+
+    assert row["sla_bucket"] == "N/A"
+
+
+def test_action_required_is_populated_for_break(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    row = result[result["status"] == "QUANTITY_BREAK"].iloc[0]
+
+    assert row["action_required"] == "Review trade blotter, settlement status, and custodian booking"
+
+
+def test_action_required_is_no_action_for_matched_record(tmp_path: Path) -> None:
+    build_recon_demo_data(tmp_path)
+
+    result = run_auto_recon(tmp_path, POLICY)
+    row = result[result["status"] == "MATCHED"].iloc[0]
+
+    assert row["action_required"] == "No action required"
+
+
 def test_generated_demo_files_contain_intentional_breaks(tmp_path: Path) -> None:
     build_recon_demo_data(tmp_path)
 
@@ -140,6 +219,11 @@ def test_generated_demo_files_contain_intentional_breaks(tmp_path: Path) -> None
     custodian_positions = pd.read_csv(tmp_path / "custodian_positions.csv")
     internal_cash = pd.read_csv(tmp_path / "internal_cash.csv")
     bank_cash = pd.read_csv(tmp_path / "bank_cash.csv")
+
+    assert set(internal_positions["asof_date"]) == {"2026-01-10"}
+    assert set(custodian_positions["asof_date"]) == {"2026-01-10"}
+    assert set(internal_cash["asof_date"]) == {"2026-01-10"}
+    assert set(bank_cash["asof_date"]) == {"2026-01-10"}
 
     spy_internal = internal_positions.loc[internal_positions["ticker"] == "SPY"].iloc[0]
     spy_custodian = custodian_positions.loc[custodian_positions["ticker"] == "SPY"].iloc[0]

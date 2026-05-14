@@ -22,6 +22,9 @@ The project is intentionally compact: the goal is to show the end-to-end control
 - Run QA checks for missing data, outliers, holdings mismatches, and NAV jumps.
 - Run PBOR-vs-custodian and ledger-vs-bank reconciliation using synthetic operational records.
 - Generate an exception queue for review.
+- Track exception lifecycle status and SLA aging buckets.
+- Generate a sign-off summary across attribution, QA, position reconciliation, and cash reconciliation controls.
+- Determine whether the month-end reporting pack is ready for review/sign-off.
 - Export a reporting and sign-off pack for month-end review.
 
 ## Auto-Reconciliation Workflow
@@ -38,6 +41,17 @@ It classifies:
 - Cash breaks between internal ledger and bank-style records
 
 Each record receives a status, severity, root-cause explanation, resolution note, owner, and age bucket so the output looks like a realistic middle-office exception queue.
+
+## Exception Lifecycle & Sign-Off Control Center
+
+The reconciliation output separates technical match status from operational workflow status.
+
+- Technical status identifies the result type, such as `MATCHED`, `QUANTITY_BREAK`, `PRICE_BREAK`, `CASH_BREAK`, or missing-record breaks.
+- Workflow status tracks whether a record is `OPEN` or `CLOSED`.
+- SLA buckets classify open breaks as `CURRENT`, `WATCHLIST`, or `BREACHED`.
+- The `action_required` field gives the review step an operations analyst would take next.
+- The sign-off summary aggregates Attribution Reconciliation, QA Controls, PBOR vs Custodian Positions, and Cash Reconciliation.
+- Final reporting sign-off remains `Not Ready` until failed controls are resolved.
 
 ## Sample Output
 
@@ -63,7 +77,7 @@ Run the PBOR-vs-custodian reconciliation demo:
 
 ```bash
 python scripts/build_recon_demo_data.py
-python -m src.run_month_end --asof 2026-01-31 --recon-data-dir data/recon_demo
+python -m src.run_month_end --asof 2026-01-10 --recon-data-dir data/recon_demo
 streamlit run app/dashboard.py
 ```
 
@@ -81,7 +95,9 @@ Each month-end run writes a dated output folder under `outputs/YYYY-MM/` plus an
 
 - `report.xlsx`: Excel workbook with performance, attribution, QA, and reconciliation sheets
 - `AutoReconExceptions`: Excel sheet containing PBOR-vs-custodian and cash reconciliation output
+- `SignOffSummary`: Excel sheet containing control-area pass/fail and reporting readiness
 - `recon_exceptions.csv`: auto-reconciliation exception queue
+- `signoff_summary.csv`: sign-off control summary by control area
 - `daily_returns.csv`: daily performance time series
 - `monthly_returns.csv`: monthly TWR, Modified Dietz, benchmark, and active return output
 - `attribution.csv`: Brinson-Fachler attribution output

@@ -14,6 +14,45 @@ import yaml
 DB_PATH = Path(__file__).resolve().parents[1] / "pbor_lite.db"
 POLICY_PATH = Path(__file__).resolve().parents[1] / "policy.yaml"
 NON_EXCEPTION_STATUSES = {"MATCHED", "WITHIN_TOLERANCE"}
+RECON_COLUMNS = [
+    "asof_date",
+    "portfolio_id",
+    "account_id",
+    "security_id",
+    "ticker",
+    "currency",
+    "break_type",
+    "status",
+    "workflow_status",
+    "severity",
+    "sla_bucket",
+    "internal_quantity",
+    "external_quantity",
+    "quantity_diff",
+    "internal_price",
+    "external_price",
+    "price_diff",
+    "internal_market_value",
+    "external_market_value",
+    "market_value_diff",
+    "internal_cash",
+    "external_cash",
+    "cash_diff",
+    "root_cause",
+    "resolution_note",
+    "action_required",
+    "owner",
+    "age_days",
+]
+SIGNOFF_COLUMNS = [
+    "control_area",
+    "status",
+    "high_severity_count",
+    "open_exception_count",
+    "ready_for_signoff",
+    "review_note",
+    "action_required",
+]
 
 st.set_page_config(
     page_title="Portfolio Reconciliation & Reporting Control Engine",
@@ -64,6 +103,62 @@ def _fmt_date(value: object) -> str:
     if value is None or pd.isna(value):
         return "-"
     return pd.to_datetime(value).strftime("%Y-%m-%d")
+
+
+def _read_table_safely(table_name: str, expected_columns: list[str]) -> pd.DataFrame:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        table_info = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        existing_columns = [str(row[1]) for row in table_info]
+        if not existing_columns:
+            return pd.DataFrame(columns=expected_columns)
+        selected_columns = [column for column in expected_columns if column in existing_columns]
+        if not selected_columns:
+            return pd.DataFrame(columns=expected_columns)
+        frame = pd.read_sql_query(f"SELECT {', '.join(selected_columns)} FROM {table_name}", conn)
+    finally:
+        conn.close()
+    for column in expected_columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame[expected_columns].copy()
+
+
+def _derive_workflow_status(status: object) -> str:
+    return "CLOSED" if str(status) in NON_EXCEPTION_STATUSES else "OPEN"
+
+
+def _derive_sla_bucket(status: object, age_days: object) -> str:
+    if str(status) in NON_EXCEPTION_STATUSES:
+        return "N/A"
+    try:
+        age = int(age_days)
+    except (TypeError, ValueError):
+        age = 0
+    if age <= 1:
+        return "CURRENT"
+    if age <= 3:
+        return "WATCHLIST"
+    return "BREACHED"
+
+
+def _ensure_recon_display_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=RECON_COLUMNS)
+    out = frame.copy()
+    for column in RECON_COLUMNS:
+        if column not in out.columns:
+            out[column] = pd.NA
+    out["workflow_status"] = out.apply(
+        lambda row: row["workflow_status"] if pd.notna(row["workflow_status"]) else _derive_workflow_status(row["status"]),
+        axis=1,
+    )
+    out["sla_bucket"] = out.apply(
+        lambda row: row["sla_bucket"] if pd.notna(row["sla_bucket"]) else _derive_sla_bucket(row["status"], row["age_days"]),
+        axis=1,
+    )
+    out["action_required"] = out["action_required"].fillna(out["resolution_note"]).fillna("Review and document resolution")
+    return out[RECON_COLUMNS].copy()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -130,30 +225,16 @@ def load_breaks() -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_recon_exceptions() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        try:
-            frame = pd.read_sql_query(
-                """
-                SELECT asof_date, portfolio_id, account_id, security_id, ticker, currency,
-                       break_type, status, severity, internal_quantity, external_quantity,
-                       quantity_diff, internal_price, external_price, price_diff,
-                       internal_market_value, external_market_value, market_value_diff,
-                       internal_cash, external_cash, cash_diff, root_cause, resolution_note,
-                       owner, age_days
-                FROM pbor_recon_exceptions
-                ORDER BY asof_date DESC, severity DESC, status, break_type
-                """,
-                conn,
-            )
-        except sqlite3.OperationalError:
-            frame = pd.DataFrame()
-    finally:
-        conn.close()
+    frame = _ensure_recon_display_columns(_read_table_safely("pbor_recon_exceptions", RECON_COLUMNS))
     if frame.empty:
         return frame
     frame["asof_date"] = pd.to_datetime(frame["asof_date"])
-    return frame
+    return frame.sort_values(["asof_date", "severity", "status", "break_type"], ascending=[False, False, True, True])
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_signoff_summary() -> pd.DataFrame:
+    return _read_table_safely("pbor_signoff_summary", SIGNOFF_COLUMNS)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -418,18 +499,90 @@ def render_breaks_tab(breaks: pd.DataFrame) -> None:
     )
 
 
-def render_auto_recon_tab(recon_exceptions: pd.DataFrame) -> None:
+def _open_recon_mask(frame: pd.DataFrame) -> pd.Series:
+    if frame.empty:
+        return pd.Series(dtype=bool)
+    if "workflow_status" in frame.columns:
+        return frame["workflow_status"].astype(str).str.upper().ne("CLOSED")
+    return ~frame["status"].astype(str).isin(NON_EXCEPTION_STATUSES)
+
+
+def _render_signoff_control_center(recon_exceptions: pd.DataFrame, signoff_summary: pd.DataFrame) -> None:
+    st.markdown("### Sign-Off Control Center")
+
+    final = signoff_summary[signoff_summary["control_area"] == "Final Reporting Sign-Off"] if not signoff_summary.empty else pd.DataFrame()
+    signoff_ready = bool(final.iloc[0]["ready_for_signoff"]) if not final.empty else False
+    failed_control_areas = (
+        signoff_summary[
+            (signoff_summary["status"].astype(str) == "FAIL")
+            & (signoff_summary["control_area"] != "Final Reporting Sign-Off")
+        ]
+        if not signoff_summary.empty
+        else pd.DataFrame()
+    )
+    open_mask = _open_recon_mask(recon_exceptions)
+    high_recon = (
+        int((recon_exceptions["severity"].astype(str).str.upper().eq("HIGH") & open_mask).sum())
+        if not recon_exceptions.empty and "severity" in recon_exceptions.columns
+        else 0
+    )
+    breached = (
+        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("BREACHED").sum())
+        if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
+        else 0
+    )
+    watchlist = (
+        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("WATCHLIST").sum())
+        if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
+        else 0
+    )
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Final Sign-Off", "Ready" if signoff_ready else "Not Ready")
+    metric_cols[1].metric("Failed Areas", f"{len(failed_control_areas):,}")
+    metric_cols[2].metric("Open High Recon", f"{high_recon:,}")
+    sla_cols = st.columns(2)
+    sla_cols[0].metric("SLA Breached", f"{breached:,}")
+    sla_cols[1].metric("Watchlist", f"{watchlist:,}")
+
+    if signoff_summary.empty:
+        st.info("No sign-off summary available. Run month-end to generate control readiness output.")
+        return
+
+    signoff_display = signoff_summary.rename(
+        columns={
+            "control_area": "Control Area",
+            "status": "Status",
+            "high_severity_count": "High Severity Count",
+            "open_exception_count": "Open Exception Count",
+            "ready_for_signoff": "Ready for Sign-Off",
+            "review_note": "Review Note",
+            "action_required": "Action Required",
+        }
+    )
+    signoff_display["Ready for Sign-Off"] = signoff_display["Ready for Sign-Off"].map(
+        lambda value: "Yes" if bool(value) else "No"
+    )
+    st.dataframe(signoff_display, use_container_width=True, hide_index=True)
+
+
+def render_auto_recon_tab(recon_exceptions: pd.DataFrame, signoff_summary: pd.DataFrame) -> None:
     st.subheader("Auto Reconciliation")
+    _render_signoff_control_center(recon_exceptions, signoff_summary)
+
     if recon_exceptions.empty:
         st.info("No auto-reconciliation records available. Run month-end with --recon-data-dir.")
         return
 
     frame = recon_exceptions.copy()
     status = frame["status"].astype(str)
+    workflow_status = frame["workflow_status"].astype(str)
     total_records = int(len(frame))
     matched_records = int(status.eq("MATCHED").sum())
-    open_exceptions = int((~status.isin(NON_EXCEPTION_STATUSES)).sum())
-    high_exceptions = int(frame["severity"].astype(str).str.upper().eq("HIGH").sum())
+    open_exceptions = int(workflow_status.str.upper().ne("CLOSED").sum())
+    high_exceptions = int(
+        (frame["severity"].astype(str).str.upper().eq("HIGH") & workflow_status.str.upper().ne("CLOSED")).sum()
+    )
     cash_break_amount = float(
         pd.to_numeric(frame.loc[status.eq("CASH_BREAK"), "cash_diff"], errors="coerce").abs().sum()
     )
@@ -439,8 +592,10 @@ def render_auto_recon_tab(recon_exceptions: pd.DataFrame) -> None:
         .sum()
     )
     match_rate = matched_records / total_records if total_records else 0.0
-    ready_for_signoff = high_exceptions == 0
+    final = signoff_summary[signoff_summary["control_area"] == "Final Reporting Sign-Off"] if not signoff_summary.empty else pd.DataFrame()
+    ready_for_signoff = bool(final.iloc[0]["ready_for_signoff"]) if not final.empty else high_exceptions == 0
 
+    st.markdown("### Exception Queue")
     metric_cols = st.columns(4)
     metric_cols[0].metric("Match Rate %", f"{match_rate * 100:.1f}%")
     metric_cols[1].metric("Total Records", f"{total_records:,}")
@@ -453,13 +608,17 @@ def render_auto_recon_tab(recon_exceptions: pd.DataFrame) -> None:
     value_cols[2].metric("Ready for Sign-Off", "Yes" if ready_for_signoff else "No")
     st.caption("Readiness here is recon-only unless QA and attribution controls are reviewed in the full month-end pack.")
 
-    filter_cols = st.columns(3)
+    filter_cols = st.columns(5)
     severity_options = sorted(frame["severity"].dropna().astype(str).unique().tolist())
     status_options = sorted(frame["status"].dropna().astype(str).unique().tolist())
     break_type_options = sorted(frame["break_type"].dropna().astype(str).unique().tolist())
+    workflow_options = sorted(frame["workflow_status"].dropna().astype(str).unique().tolist())
+    sla_options = sorted(frame["sla_bucket"].dropna().astype(str).unique().tolist())
     selected_severity = filter_cols[0].selectbox("Severity", ["All"] + severity_options)
     selected_status = filter_cols[1].selectbox("Status", ["All"] + status_options)
     selected_break_type = filter_cols[2].selectbox("Break Type", ["All"] + break_type_options)
+    selected_workflow = filter_cols[3].selectbox("Workflow Status", ["All"] + workflow_options)
+    selected_sla = filter_cols[4].selectbox("SLA Bucket", ["All"] + sla_options)
 
     filtered = frame.copy()
     if selected_severity != "All":
@@ -468,6 +627,10 @@ def render_auto_recon_tab(recon_exceptions: pd.DataFrame) -> None:
         filtered = filtered[filtered["status"].astype(str) == selected_status]
     if selected_break_type != "All":
         filtered = filtered[filtered["break_type"].astype(str) == selected_break_type]
+    if selected_workflow != "All":
+        filtered = filtered[filtered["workflow_status"].astype(str) == selected_workflow]
+    if selected_sla != "All":
+        filtered = filtered[filtered["sla_bucket"].astype(str) == selected_sla]
 
     column_labels = {
         "asof_date": "As-Of Date",
@@ -478,7 +641,9 @@ def render_auto_recon_tab(recon_exceptions: pd.DataFrame) -> None:
         "currency": "Currency",
         "break_type": "Break Type",
         "status": "Status",
+        "workflow_status": "Workflow Status",
         "severity": "Severity",
+        "sla_bucket": "SLA Bucket",
         "internal_quantity": "Internal Qty",
         "external_quantity": "External Qty",
         "quantity_diff": "Qty Diff",
@@ -493,6 +658,7 @@ def render_auto_recon_tab(recon_exceptions: pd.DataFrame) -> None:
         "cash_diff": "Cash Diff",
         "root_cause": "Root Cause",
         "resolution_note": "Resolution Note",
+        "action_required": "Action Required",
         "owner": "Owner",
         "age_days": "Age Days",
     }
@@ -640,6 +806,7 @@ monthly_returns = load_monthly_returns()
 attribution = load_attribution()
 breaks = load_breaks()
 recon_exceptions = load_recon_exceptions()
+signoff_summary = load_signoff_summary()
 daily_returns = load_daily_returns()
 policy = load_policy()
 table_counts = load_table_counts()
@@ -681,7 +848,7 @@ with tabs[2]:
     render_breaks_tab(breaks)
 
 with tabs[3]:
-    render_auto_recon_tab(recon_exceptions)
+    render_auto_recon_tab(recon_exceptions, signoff_summary)
 
 with tabs[4]:
     render_policy_metadata_tab(monthly_returns, policy, table_counts)
