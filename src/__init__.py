@@ -1,1 +1,1 @@
-"""PBOR-Lite package."""
+"""Portfolio Reconciliation & Reporting Control Engine package."""

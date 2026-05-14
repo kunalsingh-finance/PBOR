@@ -130,3 +130,33 @@ CREATE TABLE IF NOT EXISTS pbor_breaks (
     resolution TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS pbor_recon_exceptions (
+    recon_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asof_date TEXT NOT NULL,
+    portfolio_id TEXT NOT NULL,
+    account_id TEXT,
+    security_id TEXT,
+    ticker TEXT,
+    currency TEXT,
+    break_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    internal_quantity REAL,
+    external_quantity REAL,
+    quantity_diff REAL,
+    internal_price REAL,
+    external_price REAL,
+    price_diff REAL,
+    internal_market_value REAL,
+    external_market_value REAL,
+    market_value_diff REAL,
+    internal_cash REAL,
+    external_cash REAL,
+    cash_diff REAL,
+    root_cause TEXT,
+    resolution_note TEXT,
+    owner TEXT,
+    age_days INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);

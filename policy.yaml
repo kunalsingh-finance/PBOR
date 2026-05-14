@@ -17,3 +17,8 @@ nav_jump_zero_flow_threshold: 0.1
 portfolio_benchmark_map:
   PF_GROWTH: BM_GROWTH
   PF_INCOME: BM_INCOME
+position_recon:
+  quantity_tolerance: 0
+  price_tolerance_pct: 0.0005
+  market_value_tolerance: 100
+  cash_tolerance: 50

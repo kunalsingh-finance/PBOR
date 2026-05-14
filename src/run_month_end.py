@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from pbor.date_source import derive_date_context
+from .auto_recon import NON_EXCEPTION_STATUSES, RECON_OUTPUT_COLUMNS, run_auto_recon
 from .attribution import compute_monthly_attribution
 from .export import export_outputs
 from .ingest import initialize_db, ingest_qa_summary, load_inputs, load_policy, load_tables
@@ -24,15 +25,56 @@ def _replace_table(conn: sqlite3.Connection, table_name: str, frame: pd.DataFram
             frame.to_sql(table_name, conn, if_exists="append", index=False)
 
 
+def _has_high_severity(frame: pd.DataFrame) -> bool:
+    if frame.empty or "severity" not in frame.columns:
+        return False
+    return bool(frame["severity"].astype(str).str.upper().eq("HIGH").any())
+
+
+def _attribution_ready(recon_latest: dict[str, object]) -> bool:
+    return bool(
+        recon_latest.get("available")
+        and recon_latest.get("within_tolerance")
+        and recon_latest.get("weights_ok", True)
+        and recon_latest.get("portfolio_return_ok", True)
+    )
+
+
+def _recon_metrics(recon_exceptions: pd.DataFrame) -> dict[str, object]:
+    if recon_exceptions.empty:
+        return {
+            "recon_rows": 0,
+            "recon_open_exceptions": 0,
+            "recon_high_severity_exceptions": 0,
+            "recon_match_rate": 0.0,
+        }
+    status = recon_exceptions["status"].astype(str)
+    total = int(len(recon_exceptions))
+    matched = int(status.eq("MATCHED").sum())
+    open_exceptions = int((~status.isin(NON_EXCEPTION_STATUSES)).sum())
+    high_severity = int(recon_exceptions["severity"].astype(str).str.upper().eq("HIGH").sum())
+    return {
+        "recon_rows": total,
+        "recon_open_exceptions": open_exceptions,
+        "recon_high_severity_exceptions": high_severity,
+        "recon_match_rate": matched / total if total else 0.0,
+    }
+
+
 def run_month_end(
     project_root: Path,
     asof_date: str,
     data_dir: Path | None = None,
     db_path: Path | None = None,
+    recon_data_dir: Path | None = None,
 ) -> dict[str, object]:
     project_root = project_root.resolve()
     data_dir = data_dir or (project_root / "data")
     db_path = db_path or (project_root / "pbor_lite.db")
+    if recon_data_dir is not None:
+        recon_data_dir = Path(recon_data_dir)
+        if not recon_data_dir.is_absolute():
+            recon_data_dir = project_root / recon_data_dir
     sql_dir = project_root / "sql"
 
     policy = load_policy(project_root / "policy.yaml")
@@ -115,6 +157,20 @@ def run_month_end(
                 )
             breaks = pd.concat([breaks, pd.DataFrame(extra)], ignore_index=True)
 
+        if recon_data_dir is not None:
+            try:
+                recon_exceptions = run_auto_recon(recon_data_dir, policy)
+            except (FileNotFoundError, ValueError) as exc:
+                raise RuntimeError(f"Auto reconciliation failed for {recon_data_dir}: {exc}") from exc
+        else:
+            recon_exceptions = pd.DataFrame(columns=RECON_OUTPUT_COLUMNS)
+        recon_run_metrics = _recon_metrics(recon_exceptions)
+        ready_for_signoff = bool(
+            _attribution_ready(recon_latest)
+            and not _has_high_severity(breaks)
+            and not _has_high_severity(recon_exceptions)
+        )
+
         _replace_table(conn, "pbor_daily_positions", positions)
         _replace_table(conn, "pbor_daily_returns", daily_returns)
         monthly_for_db = monthly_returns[
@@ -131,6 +187,7 @@ def run_month_end(
         _replace_table(conn, "pbor_monthly_returns", monthly_for_db)
         _replace_table(conn, "pbor_attribution_monthly", attribution)
         _replace_table(conn, "pbor_breaks", breaks)
+        _replace_table(conn, "pbor_recon_exceptions", recon_exceptions)
 
         date_ctx = derive_date_context(
             daily_returns=daily_returns,
@@ -155,8 +212,10 @@ def run_month_end(
             attribution=attribution,
             breaks=breaks,
             ingest_qa=ingest_qa,
+            recon_exceptions=recon_exceptions,
             reconciliation_tolerance_bps=reconciliation_tolerance_bps,
             cash_return_source=cash_return_source,
+            ready_for_signoff=ready_for_signoff,
             date_context=date_ctx,
         )
         png_path, pdf_path = generate_tear_sheet(
@@ -185,21 +244,24 @@ def run_month_end(
             "tearsheet_png": str(png_path),
             "tearsheet_pdf": str(pdf_path),
             "attribution_reconciliation_tolerance_bps": reconciliation_tolerance_bps,
+            **recon_run_metrics,
+            "ready_for_signoff": ready_for_signoff,
         }
     finally:
         conn.close()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run PBOR-Lite month-end pipeline.")
+    parser = argparse.ArgumentParser(description="Run Portfolio Reconciliation & Reporting Control Engine month-end pipeline.")
     parser.add_argument("--asof", required=True, help="As-of date (YYYY-MM-DD).")
     parser.add_argument(
         "--project-root",
         default=str(Path(__file__).resolve().parents[1]),
-        help="Path to PBOR-Lite project root.",
+        help="Path to Portfolio Reconciliation & Reporting Control Engine project root.",
     )
     parser.add_argument("--data-dir", default=None, help="Optional override for input CSV directory.")
     parser.add_argument("--db-path", default=None, help="Optional override for SQLite DB path.")
+    parser.add_argument("--recon-data-dir", default=None, help="Optional folder containing PBOR-vs-custodian recon CSVs.")
     return parser.parse_args()
 
 
@@ -210,8 +272,9 @@ def main() -> None:
         asof_date=args.asof,
         data_dir=Path(args.data_dir) if args.data_dir else None,
         db_path=Path(args.db_path) if args.db_path else None,
+        recon_data_dir=Path(args.recon_data_dir) if args.recon_data_dir else None,
     )
-    print("PBOR-Lite run completed.")
+    print("Portfolio Reconciliation & Reporting Control Engine run completed.")
     for key, value in summary.items():
         print(f"{key}: {value}")
 

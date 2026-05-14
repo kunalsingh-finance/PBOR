@@ -2,19 +2,19 @@
 
 ## Return Methodology
 
-Time-Weighted Return (TWR) is the primary portfolio return in PBOR-Lite. That is the standard measure for manager evaluation because it removes the impact of external cash flows and isolates investment performance.
+Time-Weighted Return (TWR) is the primary portfolio return in Portfolio Reconciliation & Reporting Control Engine. That is the standard measure for manager evaluation because it removes the impact of external cash flows and isolates investment performance.
 
 Daily return is calculated from beginning market value, ending market value, and external flow for the day. Monthly TWR is then produced by chain-linking the daily series:
 
 `(1 + r_1) x (1 + r_2) x ... x (1 + r_n) - 1`
 
-Modified Dietz is retained as a secondary measure and control. It is most useful when cash flow is large relative to portfolio size. In PBOR-Lite, that review point is tied to the policy threshold of more than 10% of net asset value. Modified Dietz provides a practical money-weighted approximation without requiring full intraday valuations.
+Modified Dietz is retained as a secondary measure and control. It is most useful when cash flow is large relative to portfolio size. In Portfolio Reconciliation & Reporting Control Engine, that review point is tied to the policy threshold of more than 10% of net asset value. Modified Dietz provides a practical money-weighted approximation without requiring full intraday valuations.
 
 Arithmetic return is stored separately because attribution reconciles on an arithmetic basis. Brinson-Fachler effects sum arithmetically, so arithmetic portfolio and benchmark returns provide the correct active-return reference for reconciliation.
 
 ## Attribution Methodology
 
-PBOR-Lite uses Brinson-Fachler sector attribution. For each sector:
+Portfolio Reconciliation & Reporting Control Engine uses Brinson-Fachler sector attribution. For each sector:
 
 - Allocation = `(w_p - w_b) x (r_b - R_b)`
 - Selection = `w_b x (r_p - r_b)`
@@ -36,7 +36,7 @@ Internal buy and sell flows are excluded from sector return construction. This a
 
 ## Reconciliation Gate
 
-PBOR-Lite enforces a 5 basis-point reconciliation tolerance between reported active return and summed attribution effect. A difference below 5 bps is treated as within tolerance. A difference at or above 5 bps is a failed control.
+Portfolio Reconciliation & Reporting Control Engine enforces a 5 basis-point reconciliation tolerance between reported active return and summed attribution effect. A difference below 5 bps is treated as within tolerance. A difference at or above 5 bps is a failed control.
 
 When the gate fails, attribution output is withheld and the exception is logged as a QA break. In this reporting workflow simulation, attribution that does not reconcile to reported active return should remain under review rather than be presented as final.
 
@@ -64,3 +64,47 @@ Severity levels are used as follows:
 - `HIGH` = results should be treated as under review until resolved
 - `MEDIUM` = material exception that requires review
 - `LOW` = informational or non-blocking exception
+
+## PBOR vs Custodian Reconciliation Methodology
+
+Portfolio reports are only reliable when positions, cash, prices, and attribution controls tie out. The reconciliation workflow simulates how middle-office or investment operations teams identify breaks before month-end reporting sign-off.
+
+The purpose of the PBOR-vs-custodian reconciliation is to compare internal PBOR-style records with external custodian and bank-style records before reporting is treated as review-ready. This project uses synthetic operational records only; real PBOR, custodian, bank, and broker files are confidential.
+
+Position records are matched on:
+
+- `asof_date`
+- `portfolio_id`
+- `account_id`
+- `security_id`
+
+Cash records are matched on:
+
+- `asof_date`
+- `portfolio_id`
+- `account_id`
+- `currency`
+
+The reconciliation applies policy-driven tolerances for quantity, price percentage, market value, and cash balance differences. Exact matches receive `MATCHED`; non-zero differences inside tolerance receive `WITHIN_TOLERANCE`.
+
+Break classification is ordered so the most operationally important issue is surfaced first:
+
+- internal-only position = `MISSING_IN_CUSTODIAN`
+- external-only position = `MISSING_IN_INTERNAL`
+- quantity outside tolerance = `QUANTITY_BREAK`
+- price percentage outside tolerance = `PRICE_BREAK`
+- market value outside tolerance = `MARKET_VALUE_BREAK`
+- internal-only cash = `MISSING_IN_BANK`
+- bank-only cash = `MISSING_IN_INTERNAL_CASH`
+- cash difference outside tolerance = `CASH_BREAK`
+
+Severity logic is designed for review triage:
+
+- `INFO` = matched record
+- `LOW` = within configured tolerance
+- `MEDIUM` = price break or moderate market value break
+- `HIGH` = quantity break, cash break, missing record, or market value break above 10,000 base-currency units
+
+Root cause and resolution notes are mapped from the break type. Quantity breaks point to settlement timing, booking, or unmatched transaction review. Price breaks point to pricing-source or stale-price review. Cash breaks point to ledger, bank activity, fees, dividends, wires, and interest timing. Missing-record breaks point to feed completeness, PBOR booking, and security setup.
+
+Sign-off readiness requires attribution reconciliation to pass, no high-severity QA breaks, and no high-severity auto-reconciliation exceptions. If any of those controls fails, the reporting pack should remain under review.

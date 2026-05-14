@@ -52,3 +52,30 @@ Review rule:
 Reconciliation basis:
 
 - Attribution is reconciled to arithmetic active return for the same start/end window.
+
+## PBOR-vs-custodian reconciliation
+
+The auto-reconciliation workflow compares synthetic internal PBOR-style records against synthetic custodian and bank-style records. It is included to demonstrate investment operations and middle-office controls without exposing confidential client, custodian, bank, or broker data.
+
+Position matching key:
+
+`asof_date + portfolio_id + account_id + security_id`
+
+Cash matching key:
+
+`asof_date + portfolio_id + account_id + currency`
+
+Break rules:
+
+- missing external position: `MISSING_IN_CUSTODIAN`
+- missing internal position: `MISSING_IN_INTERNAL`
+- quantity outside tolerance: `QUANTITY_BREAK`
+- price percentage outside tolerance: `PRICE_BREAK`
+- market value outside tolerance: `MARKET_VALUE_BREAK`
+- cash outside tolerance: `CASH_BREAK`
+- missing bank cash: `MISSING_IN_BANK`
+- missing internal cash: `MISSING_IN_INTERNAL_CASH`
+
+Sign-off rule:
+
+- Ready only when attribution reconciles, no high-severity QA breaks remain, and no high-severity auto-reconciliation exceptions remain.

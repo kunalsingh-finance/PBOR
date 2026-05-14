@@ -11,6 +11,7 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 from pbor.date_source import derive_date_context
+from .auto_recon import NON_EXCEPTION_STATUSES, RECON_OUTPUT_COLUMNS
 from .qa import flow_summary_stats, format_flow_summary_line
 from .reconciliation import attribution_reconciliation, latest_reconciliation
 
@@ -163,6 +164,62 @@ def _break_count(breaks: pd.DataFrame, break_type: str) -> int:
     return int((breaks["break_type"] == break_type).sum())
 
 
+def _prepare_recon_exceptions(recon_exceptions: pd.DataFrame | None) -> pd.DataFrame:
+    if recon_exceptions is None or recon_exceptions.empty:
+        return pd.DataFrame(columns=RECON_OUTPUT_COLUMNS)
+    frame = recon_exceptions.copy()
+    for column in RECON_OUTPUT_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame[RECON_OUTPUT_COLUMNS].copy()
+
+
+def _recon_summary_metrics(recon_exceptions: pd.DataFrame, ready_for_signoff: bool) -> dict[str, object]:
+    if recon_exceptions.empty:
+        return {
+            "total_recon_records": 0,
+            "matched_recon_records": 0,
+            "open_recon_exceptions": 0,
+            "high_severity_recon_exceptions": 0,
+            "cash_break_amount": 0.0,
+            "market_value_break_amount": 0.0,
+            "recon_match_rate": 0.0,
+            "ready_for_signoff": bool(ready_for_signoff),
+        }
+
+    status = recon_exceptions["status"].astype(str)
+    total = int(len(recon_exceptions))
+    matched = int(status.eq("MATCHED").sum())
+    open_exceptions = int((~status.isin(NON_EXCEPTION_STATUSES)).sum())
+    high_severity = int(recon_exceptions["severity"].astype(str).str.upper().eq("HIGH").sum())
+    cash_break_amount = float(
+        pd.to_numeric(
+            recon_exceptions.loc[status.eq("CASH_BREAK"), "cash_diff"],
+            errors="coerce",
+        )
+        .abs()
+        .sum()
+    )
+    market_value_break_amount = float(
+        pd.to_numeric(
+            recon_exceptions.loc[~status.isin(NON_EXCEPTION_STATUSES), "market_value_diff"],
+            errors="coerce",
+        )
+        .abs()
+        .sum()
+    )
+    return {
+        "total_recon_records": total,
+        "matched_recon_records": matched,
+        "open_recon_exceptions": open_exceptions,
+        "high_severity_recon_exceptions": high_severity,
+        "cash_break_amount": cash_break_amount,
+        "market_value_break_amount": market_value_break_amount,
+        "recon_match_rate": matched / total if total else 0.0,
+        "ready_for_signoff": bool(ready_for_signoff),
+    }
+
+
 def _outlier_explanations(breaks: pd.DataFrame) -> list[str]:
     if breaks.empty:
         return []
@@ -216,7 +273,7 @@ def _build_onepager_markdown(
     )
     period_rows = _period_return_rows(daily_returns)
     risk = _risk_metrics(daily_returns=daily_returns, cash_return_source=cash_return_source)
-    lines.append("# PBOR-Lite One-Pager")
+    lines.append("# Portfolio Reconciliation & Reporting Control Engine One-Pager")
     lines.append("")
     lines.append(f"As-of (data): {data_asof_date}")
     lines.append(f"Generated: {generated_at_et}")
@@ -407,7 +464,8 @@ def _build_onepager_markdown(
     lines.append("- `attribution_reconciliation.csv`: attribution-to-active pass/fail control.")
     lines.append("- `breaks.csv`: detected data/logic breaks with severity and notes.")
     lines.append("- `qa_ingest_summary.csv`: ingestion validation checks.")
-    lines.append("- `report*.xlsx`: workbook with Summary, Returns, Attribution, and Breaks tabs.")
+    lines.append("- `recon_exceptions.csv`: optional PBOR-vs-custodian reconciliation queue.")
+    lines.append("- `report*.xlsx`: workbook with Summary, Returns, Attribution, Breaks, and AutoReconExceptions tabs.")
     lines.append("- `onepager.pdf`: one-page summary tear sheet.")
     return "\n".join(lines) + "\n"
 
@@ -421,6 +479,8 @@ def _build_summary_table(
     ingest_qa: pd.DataFrame,
     recon_latest: dict[str, object],
     cash_return_source: str,
+    recon_exceptions: pd.DataFrame | None = None,
+    ready_for_signoff: bool = False,
     date_context: dict[str, object] | None = None,
 ) -> pd.DataFrame:
     window_ctx = date_context or derive_date_context(daily_returns=daily_returns, clamp_to_market=True)
@@ -443,6 +503,8 @@ def _build_summary_table(
         start_date=str(mtd_window["start"]),
         end_date=str(mtd_window["end"]),
     )
+    auto_recon = _prepare_recon_exceptions(recon_exceptions)
+    auto_recon_metrics = _recon_summary_metrics(auto_recon, ready_for_signoff=ready_for_signoff)
     rows: list[dict[str, object]] = [
         {"metric": "asof_date", "value": asof_effective},
         {"metric": "data_asof_date", "value": data_asof_date},
@@ -472,6 +534,11 @@ def _build_summary_table(
             {"metric": "monthly_rows", "value": int(len(monthly_returns))},
             {"metric": "attribution_rows", "value": int(len(attribution))},
             {"metric": "break_rows", "value": int(len(breaks))},
+            {"metric": "total_recon_records", "value": auto_recon_metrics["total_recon_records"]},
+            {"metric": "open_recon_exceptions", "value": auto_recon_metrics["open_recon_exceptions"]},
+            {"metric": "high_severity_recon_exceptions", "value": auto_recon_metrics["high_severity_recon_exceptions"]},
+            {"metric": "recon_match_rate", "value": auto_recon_metrics["recon_match_rate"]},
+            {"metric": "ready_for_signoff", "value": auto_recon_metrics["ready_for_signoff"]},
             {"metric": "ingest_fail_checks", "value": int((ingest_qa["status"] == "FAIL").sum())},
             {"metric": "return_outliers", "value": _break_count(breaks, "RETURN_OUTLIER")},
             {"metric": "nav_jump_zero_flow_flags", "value": _break_count(breaks, "NAV_JUMP_ZERO_FLOW")},
@@ -525,8 +592,11 @@ def _export_excel_report(
     ingest_qa: pd.DataFrame,
     recon_latest: dict[str, object],
     cash_return_source: str,
+    recon_exceptions: pd.DataFrame | None = None,
+    ready_for_signoff: bool = False,
     date_context: dict[str, object] | None = None,
 ) -> Path:
+    auto_recon = _prepare_recon_exceptions(recon_exceptions)
     summary = _build_summary_table(
         asof_date=asof_date,
         daily_returns=daily_returns,
@@ -536,6 +606,8 @@ def _export_excel_report(
         ingest_qa=ingest_qa,
         recon_latest=recon_latest,
         cash_return_source=cash_return_source,
+        recon_exceptions=auto_recon,
+        ready_for_signoff=ready_for_signoff,
         date_context=date_context,
     )
 
@@ -548,6 +620,7 @@ def _export_excel_report(
             attribution_recon.to_excel(writer, index=False, sheet_name="AttrReconciliation")
             breaks.to_excel(writer, index=False, sheet_name="Breaks")
             ingest_qa.to_excel(writer, index=False, sheet_name="IngestQA")
+            auto_recon.to_excel(writer, index=False, sheet_name="AutoReconExceptions")
 
             _autofit_columns(writer, "Summary", summary)
             _autofit_columns(writer, "MonthlyReturns", monthly_returns)
@@ -556,6 +629,7 @@ def _export_excel_report(
             _autofit_columns(writer, "AttrReconciliation", attribution_recon)
             _autofit_columns(writer, "Breaks", breaks)
             _autofit_columns(writer, "IngestQA", ingest_qa)
+            _autofit_columns(writer, "AutoReconExceptions", auto_recon)
 
     report_path = target / "report.xlsx"
     try:
@@ -610,8 +684,10 @@ def export_outputs(
     attribution: pd.DataFrame,
     breaks: pd.DataFrame,
     ingest_qa: pd.DataFrame,
+    recon_exceptions: pd.DataFrame | None = None,
     reconciliation_tolerance_bps: float = 5.0,
     cash_return_source: str = "0%",
+    ready_for_signoff: bool = False,
     date_context: dict[str, object] | None = None,
 ) -> Path:
     window_ctx = date_context or derive_date_context(daily_returns=daily_returns, clamp_to_market=True)
@@ -636,6 +712,8 @@ def export_outputs(
     month_folder = pd.to_datetime(asof_effective).strftime("%Y-%m")
     target = output_root / month_folder
     target.mkdir(parents=True, exist_ok=True)
+    auto_recon = _prepare_recon_exceptions(recon_exceptions)
+    auto_recon_metrics = _recon_summary_metrics(auto_recon, ready_for_signoff=ready_for_signoff)
 
     attribution_recon = attribution_reconciliation(
         monthly_returns=monthly_returns,
@@ -654,6 +732,7 @@ def export_outputs(
     attribution_recon.to_csv(target / "attribution_reconciliation.csv", index=False)
     breaks.to_csv(target / "breaks.csv", index=False)
     ingest_qa.to_csv(target / "qa_ingest_summary.csv", index=False)
+    auto_recon.to_csv(target / "recon_exceptions.csv", index=False)
 
     onepager_md = _build_onepager_markdown(
         asof_date=asof_effective,
@@ -678,6 +757,8 @@ def export_outputs(
         ingest_qa=ingest_qa,
         recon_latest=recon_latest,
         cash_return_source=cash_return_source,
+        recon_exceptions=auto_recon,
+        ready_for_signoff=ready_for_signoff,
         date_context=window_ctx,
     )
     controls_table_image = _export_controls_table_image(
@@ -697,6 +778,14 @@ def export_outputs(
         "data_status": "Controls Passed" if bool(recon_latest["within_tolerance"]) else "Under Review",
         "dataset_label": _dataset_label(daily_returns=daily_returns, attribution=attribution),
         "data_note": "sample market data + synthetic transaction ledger for personal-project demonstration",
+        "total_recon_records": auto_recon_metrics["total_recon_records"],
+        "matched_recon_records": auto_recon_metrics["matched_recon_records"],
+        "open_recon_exceptions": auto_recon_metrics["open_recon_exceptions"],
+        "high_severity_recon_exceptions": auto_recon_metrics["high_severity_recon_exceptions"],
+        "cash_break_amount": auto_recon_metrics["cash_break_amount"],
+        "market_value_break_amount": auto_recon_metrics["market_value_break_amount"],
+        "recon_match_rate": auto_recon_metrics["recon_match_rate"],
+        "ready_for_signoff": auto_recon_metrics["ready_for_signoff"],
         "analysis_window": {
             "start": str(analysis_window["start"]),
             "end": str(analysis_window["end"]),
@@ -762,6 +851,7 @@ def export_outputs(
             "attribution_reconciliation.csv",
             "breaks.csv",
             "qa_ingest_summary.csv",
+            "recon_exceptions.csv",
             "onepager.md",
             report_workbook.name,
             controls_table_image.name,

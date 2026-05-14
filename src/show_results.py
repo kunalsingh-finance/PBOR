@@ -40,7 +40,7 @@ def show_results(project_root: Path, month: str) -> None:
     ingest = pd.read_csv(out_dir / "qa_ingest_summary.csv")
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
 
-    print(f"PBOR-Lite results for {month}")
+    print(f"Portfolio Reconciliation & Reporting Control Engine results for {month}")
     print("=" * 40)
     data_status = summary.get("data_status", "N/A")
     dataset_label = summary.get("dataset_label", "N/A")
@@ -204,12 +204,12 @@ def show_results(project_root: Path, month: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Show PBOR-Lite output summary for a month.")
+    parser = argparse.ArgumentParser(description="Show Portfolio Reconciliation & Reporting Control Engine output summary for a month.")
     parser.add_argument("--month", required=True, help="Output month folder (YYYY-MM).")
     parser.add_argument(
         "--project-root",
         default=str(Path(__file__).resolve().parents[1]),
-        help="Path to PBOR-Lite project root.",
+        help="Path to Portfolio Reconciliation & Reporting Control Engine project root.",
     )
     return parser.parse_args()
 

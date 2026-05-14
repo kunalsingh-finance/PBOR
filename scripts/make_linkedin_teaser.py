@@ -272,7 +272,7 @@ def render_hook(assets: dict[str, Image.Image], progress: float) -> Image.Image:
     frame = make_background(assets["tearsheet"], progress)
     add_vignette(frame, top_alpha=105, bottom_alpha=180)
     draw = ImageDraw.Draw(frame)
-    draw.text((90, 160), "PBOR-Lite", font=SMALL_BOLD, fill=ACCENT)
+    draw.text((90, 160), "Portfolio Reconciliation & Reporting Control Engine", font=SMALL_BOLD, fill=ACCENT)
     draw_text_block(
         frame,
         "Personal project in portfolio analytics and investment operations",
@@ -432,7 +432,7 @@ def render_close(assets: dict[str, Image.Image], progress: float) -> Image.Image
         fill=ACCENT,
         align="center",
     )
-    draw.text((260, 1730), "PBOR-Lite", font=SMALL_BOLD, fill=TEXT_MAIN)
+    draw.text((260, 1730), "Portfolio Reconciliation & Reporting Control Engine", font=SMALL_BOLD, fill=TEXT_MAIN)
     draw.text((390, 1730), "|", font=SMALL_BOLD, fill=TEXT_MUTED)
     draw.text((430, 1730), "LinkedIn teaser built from repo assets", font=SMALL_FONT, fill=TEXT_MUTED)
     return frame
@@ -474,7 +474,7 @@ def render_close_final(assets: dict[str, Image.Image], progress: float) -> Image
         fill=ACCENT,
         align="center",
     )
-    draw.text((260, 1730), "PBOR-Lite", font=SMALL_BOLD, fill=TEXT_MAIN)
+    draw.text((260, 1730), "Portfolio Reconciliation & Reporting Control Engine", font=SMALL_BOLD, fill=TEXT_MAIN)
     draw.text((390, 1730), "|", font=SMALL_BOLD, fill=TEXT_MUTED)
     draw.text((430, 1730), "LinkedIn teaser built from repo assets", font=SMALL_FONT, fill=TEXT_MUTED)
     return frame
@@ -504,7 +504,7 @@ def build_cover(assets: dict[str, Image.Image]) -> Image.Image:
 def caption_text() -> str:
     return textwrap.dedent(
         """
-        PBOR-Lite is a personal/educational project built to better understand the control layer around performance reporting.
+        Portfolio Reconciliation & Reporting Control Engine is a personal/educational project built to better understand the control layer around performance reporting.
 
         It uses public market data plus bundled sample inputs to simulate a PBOR-style month-end reporting workflow: ingest inputs, calculate returns, run attribution, apply QA/reconciliation checks, and generate reporting outputs.
 

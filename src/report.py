@@ -639,7 +639,7 @@ def generate_tear_sheet(
             transform=ax_title.transAxes,
         )
     )
-    ax_title.text(0.04, 0.86, "PBOR-Lite", fontsize=12, color=ACCENT, weight="bold")
+    ax_title.text(0.04, 0.86, "Portfolio Reconciliation & Reporting Control Engine", fontsize=9.5, color=ACCENT, weight="bold")
     ax_title.text(0.04, 0.70, "Month-End Tear Sheet", fontsize=20, color=TEXT_MAIN, weight="bold")
     ax_title.text(
         0.04,

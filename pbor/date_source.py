@@ -130,7 +130,7 @@ def _fetch_nyse_closed_dates(year: int, cache_dir: Path | None = None) -> set[da
 
     req = urllib.request.Request(
         _NYSE_CALENDAR_URL,
-        headers={"User-Agent": "PBOR-Lite/1.0 calendar-fallback"},
+        headers={"User-Agent": "Portfolio-Reconciliation-Reporting-Control-Engine/1.0 calendar-fallback"},
     )
     try:
         with urllib.request.urlopen(req, timeout=4) as resp:  # nosec B310

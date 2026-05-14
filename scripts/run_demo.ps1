@@ -9,7 +9,7 @@ $month = ([datetime]::Parse($AsOf)).ToString("yyyy-MM")
 
 Push-Location $projectRoot
 try {
-    Write-Host "Running PBOR-Lite month-end for $AsOf"
+    Write-Host "Running Portfolio Reconciliation & Reporting Control Engine month-end for $AsOf"
     python -m src.run_month_end --asof $AsOf --project-root $projectRoot
 
     Write-Host ""
