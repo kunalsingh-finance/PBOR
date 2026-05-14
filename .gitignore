@@ -10,3 +10,4 @@ outputs/*/
 !outputs/.gitkeep
 data/calendar_cache/
 data_real/
+data/recon_demo/*.csv

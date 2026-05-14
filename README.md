@@ -89,9 +89,20 @@ python scripts/last_month_end.py
 python -m src.run_month_end --asof YYYY-MM-DD --data-dir ./data_real/market_real
 ```
 
+## Verify The Demo
+
+```bash
+python scripts/run_full_demo.py
+python scripts/verify_demo_outputs.py
+pytest -q
+streamlit run app/dashboard.py
+```
+
+The verification flow uses bundled synthetic data only. It does not require `build_real_data.py`, and it does not rely on external market-data calls.
+
 ## Project Outputs
 
-Each month-end run writes a dated output folder under `outputs/YYYY-MM/` plus an updated SQLite database at `pbor_lite.db`.
+Each month-end run writes a dated output folder under `outputs/YYYY-MM/` plus an updated SQLite database at `pbor_lite.db`. These artifacts are generated locally; they are not the source of truth in Git.
 
 - `report.xlsx`: Excel workbook with performance, attribution, QA, and reconciliation sheets
 - `AutoReconExceptions`: Excel sheet containing PBOR-vs-custodian and cash reconciliation output
@@ -114,6 +125,18 @@ Each month-end run writes a dated output folder under `outputs/YYYY-MM/` plus an
 - [METHODOLOGY.md](METHODOLOGY.md): detailed notes on return methodology, attribution, PBOR-vs-custodian reconciliation, and controls
 - [docs/Methodology.md](docs/Methodology.md): concise formula reference
 - [docs/HowItWorks.md](docs/HowItWorks.md): workflow walkthrough
+- [docs/DemoScenario.md](docs/DemoScenario.md): synthetic break scenario used in the reconciliation demo
+
+## Project Verification
+
+- `pytest -q` covers returns, attribution, auto-reconciliation, and sign-off logic.
+- `python scripts/verify_demo_outputs.py` validates the generated output pack, workbook sheets, summary JSON keys, and SQLite tables.
+- GitHub Actions runs the synthetic demo verification flow on push and pull request.
+- Synthetic data only; no confidential client, custodian, bank, or trade data.
+
+## Interview Talking Point
+
+I built a Python-based portfolio reconciliation and reporting control engine that rebuilds positions from transactions, calculates performance and attribution, compares PBOR-style records against custodian and bank-style records, classifies breaks, tracks exception lifecycle and SLA aging, and generates a sign-off summary to determine whether the month-end reporting pack is ready for review.
 
 ## Limitations
 
@@ -122,6 +145,7 @@ Each month-end run writes a dated output folder under `outputs/YYYY-MM/` plus an
 - Public educational demo, not a production accounting system.
 - Not a production-grade investment book of record, reconciliation platform, or reporting infrastructure.
 - Controls, benchmark construction, and portfolio coverage are intentionally simplified to keep the project transparent and runnable from a public repo.
+- `data/recon_demo/*.csv`, `outputs/`, and `pbor_lite.db` are generated locally from scripts rather than treated as committed source artifacts.
 
 ## Testing
 
