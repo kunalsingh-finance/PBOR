@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
   pull_request:
 
@@ -24,14 +25,11 @@ jobs:
       - name: Run tests
         run: pytest -q
 
-      - name: Build recon demo data
-        run: python scripts/build_recon_demo_data.py
-
-      - name: Run synthetic month-end demo
-        run: python -m src.run_month_end --asof 2026-01-10 --recon-data-dir data/recon_demo
-
-      - name: Run full demo script
+      - name: Run full synthetic demo
         run: python scripts/run_full_demo.py
 
-      - name: Verify outputs
+      - name: Verify generated demo outputs
         run: python scripts/verify_demo_outputs.py
+
+      - name: Compile dashboard
+        run: python -m py_compile app/dashboard.py

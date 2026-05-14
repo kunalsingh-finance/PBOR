@@ -1,4 +1,5 @@
 # Portfolio Reconciliation & Reporting Control Engine
+[![CI](https://github.com/kunalsingh-finance/PBOR/actions/workflows/ci.yml/badge.svg)](https://github.com/kunalsingh-finance/PBOR/actions/workflows/ci.yml)
 
 A Python-based PBOR-style portfolio reconciliation, attribution, QA controls, and month-end reporting workflow built to simulate how investment operations and portfolio analytics teams validate data before reporting sign-off.
 
@@ -95,10 +96,20 @@ python -m src.run_month_end --asof YYYY-MM-DD --data-dir ./data_real/market_real
 python scripts/run_full_demo.py
 python scripts/verify_demo_outputs.py
 pytest -q
+python -m py_compile app/dashboard.py
 streamlit run app/dashboard.py
 ```
 
 The verification flow uses bundled synthetic data only. It does not require `build_real_data.py`, and it does not rely on external market-data calls.
+GitHub Actions can also be run manually from the Actions tab because the CI workflow includes `workflow_dispatch`.
+
+Manual GitHub Actions check:
+
+1. Open the repository on GitHub.
+2. Go to `Actions`.
+3. Select `CI`.
+4. Click `Run workflow`.
+5. Confirm the latest run is green.
 
 ## Project Outputs
 
@@ -131,7 +142,7 @@ Each month-end run writes a dated output folder under `outputs/YYYY-MM/` plus an
 
 - `pytest -q` covers returns, attribution, auto-reconciliation, and sign-off logic.
 - `python scripts/verify_demo_outputs.py` validates the generated output pack, workbook sheets, summary JSON keys, and SQLite tables.
-- GitHub Actions runs the synthetic demo verification flow on push and pull request.
+- GitHub Actions runs the synthetic demo verification flow on push, pull request, and manual dispatch (`workflow_dispatch`).
 - Synthetic data only; no confidential client, custodian, bank, or trade data.
 
 ## What to Screenshot for Recruiters
