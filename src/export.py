@@ -659,7 +659,8 @@ def _build_summary_table(
 def _autofit_columns(writer: pd.ExcelWriter, sheet_name: str, frame: pd.DataFrame) -> None:
     sheet = writer.book[sheet_name]
     for idx, col in enumerate(frame.columns, start=1):
-        max_len = max(len(str(col)), frame[col].astype(str).map(len).max() if not frame.empty else 0)
+        value_len = frame[col].map(lambda value: len(str(value))).max() if not frame.empty else 0
+        max_len = max(len(str(col)), int(value_len or 0))
         sheet.column_dimensions[get_column_letter(idx)].width = min(max_len + 2, 80)
 
 
