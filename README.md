@@ -5,6 +5,8 @@ A Python-based PBOR-style portfolio reconciliation, attribution, QA controls, an
 
 The workflow rebuilds positions from transactions, calculates TWR and Modified Dietz returns, performs Brinson-Fachler attribution, runs QA and reconciliation controls, and exports review-ready reporting packs in Excel, CSV, PDF, PNG, SQLite, and Streamlit.
 
+The project includes a reproducible synthetic demo, automated output verification, and GitHub Actions CI so reviewers can validate the workflow end to end.
+
 The GitHub repository slug remains `PBOR`; Portfolio Reconciliation & Reporting Control Engine is the recruiter-facing project name used in the documentation and dashboard.
 
 ## Overview
