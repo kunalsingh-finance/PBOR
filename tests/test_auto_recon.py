@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from scripts.build_recon_demo_data import build_recon_demo_data
 from src.auto_recon import reconcile_cash, reconcile_positions, run_auto_recon
@@ -48,6 +49,46 @@ def test_exact_matched_position_returns_matched() -> None:
     result = reconcile_positions(internal, external, POLICY)
 
     assert result.loc[0, "status"] == "MATCHED"
+
+
+@pytest.mark.parametrize("value", [None, "not-a-number", float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("column", ["quantity", "price", "market_value_base"])
+def test_malformed_position_numbers_cannot_match(value: object, column: str) -> None:
+    internal = pd.DataFrame([_position("SEC_SPY", 100, 10)])
+    external = internal.copy().astype(object)
+    external.loc[0, column] = value
+    with pytest.raises(ValueError, match=f"custodian_positions.*{column}"):
+        reconcile_positions(internal, external, POLICY)
+
+
+@pytest.mark.parametrize("value", [None, "invalid", float("inf")])
+def test_malformed_cash_numbers_cannot_match(value: object) -> None:
+    internal = pd.DataFrame([_cash("USD", 1000)])
+    external = internal.copy().astype(object)
+    external.loc[0, "cash_balance"] = value
+    with pytest.raises(ValueError, match="bank_cash.*cash_balance"):
+        reconcile_cash(internal, external, POLICY)
+
+
+def test_duplicate_keys_are_rejected_before_many_to_many_join() -> None:
+    internal = pd.DataFrame([_position("SEC_SPY", 100, 10)] * 2)
+    with pytest.raises(ValueError, match="duplicate reconciliation keys"):
+        reconcile_positions(internal, internal.iloc[[0]], POLICY)
+
+
+@pytest.mark.parametrize("key", ["asof_date", "portfolio_id", "account_id", "security_id"])
+def test_missing_position_keys_are_rejected(key: str) -> None:
+    internal = pd.DataFrame([_position("SEC_SPY", 100, 10)])
+    external = internal.copy()
+    external.loc[0, key] = None
+    with pytest.raises(ValueError, match=f"missing key values in {key}"):
+        reconcile_positions(internal, external, POLICY)
+
+
+def test_invalid_tolerance_is_rejected() -> None:
+    internal = pd.DataFrame([_cash("USD", 1000)])
+    with pytest.raises(ValueError, match="cash_tolerance"):
+        reconcile_cash(internal, internal, {"cash_tolerance": float("inf")})
 
 
 def test_quantity_difference_returns_quantity_break() -> None:

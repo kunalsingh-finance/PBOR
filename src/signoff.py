@@ -22,29 +22,32 @@ def _high_severity_count(frame: pd.DataFrame) -> int:
 
 def _open_recon_mask(frame: pd.DataFrame) -> pd.Series:
     if frame.empty:
-        return pd.Series(dtype=bool)
+        return pd.Series(False, index=frame.index, dtype=bool)
+    fallback = (
+        ~frame["status"].astype(str).str.strip().str.upper().isin(NON_EXCEPTION_STATUSES)
+        if "status" in frame.columns else pd.Series(True, index=frame.index)
+    )
     if "workflow_status" in frame.columns:
-        return frame["workflow_status"].astype(str).str.upper().ne("CLOSED")
-    if "status" in frame.columns:
-        return ~frame["status"].astype(str).isin(NON_EXCEPTION_STATUSES)
-    return pd.Series([False] * len(frame), index=frame.index)
+        workflow = frame["workflow_status"].astype("string").str.strip().str.upper()
+        return workflow.ne("CLOSED").where(workflow.notna() & workflow.ne(""), fallback).astype(bool)
+    return fallback
 
 
 def _is_position_recon(frame: pd.DataFrame) -> pd.Series:
     if frame.empty or "security_id" not in frame.columns:
-        return pd.Series(dtype=bool)
-    return frame["security_id"].notna() & frame["security_id"].astype(str).ne("")
+        return pd.Series(False, index=frame.index, dtype=bool)
+    return frame["security_id"].notna() & ~frame["security_id"].astype(str).str.strip().isin(["", "<NA>", "nan", "None"])
 
 
 def _is_cash_recon(frame: pd.DataFrame) -> pd.Series:
     if frame.empty or "currency" not in frame.columns:
-        return pd.Series(dtype=bool)
+        return pd.Series(False, index=frame.index, dtype=bool)
     security_blank = (
-        frame["security_id"].isna() | frame["security_id"].astype(str).isin(["", "<NA>", "nan", "None"])
+        frame["security_id"].isna() | frame["security_id"].astype(str).str.strip().isin(["", "<NA>", "nan", "None"])
         if "security_id" in frame.columns
         else pd.Series([True] * len(frame), index=frame.index)
     )
-    return frame["currency"].notna() & frame["currency"].astype(str).ne("") & security_blank
+    return frame["currency"].notna() & frame["currency"].astype(str).str.strip().ne("") & security_blank
 
 
 def _row(
@@ -90,8 +93,8 @@ def build_signoff_summary(
     attribution = _row(
         control_area="Attribution Reconciliation",
         passed=attribution_pass,
-        high_severity_count=0 if attribution_pass else 1,
-        open_exception_count=0 if attribution_pass else 1,
+        high_severity_count=0 if attribution_pass else max(1, int(recon_latest.get("failed_portfolio_count", 1))),
+        open_exception_count=0 if attribution_pass else max(1, int(recon_latest.get("failed_portfolio_count", 1))),
         pass_note="Attribution reconciles within tolerance",
         fail_note="Attribution reconciliation failed or is unavailable",
         fail_action="Review attribution reconciliation output and active-return tie-out",
@@ -113,12 +116,14 @@ def build_signoff_summary(
     position_high_open = recon[position_mask & open_mask & high_recon_mask] if not recon.empty else pd.DataFrame()
     positions = _row(
         control_area="PBOR vs Custodian Positions",
-        passed=position_high_open.empty,
+        passed=bool(position_mask.any()) and position_high_open.empty,
         high_severity_count=len(position_high_open),
         open_exception_count=len(position_open),
         pass_note="No high-severity position reconciliation breaks remain open",
-        fail_note="High-severity PBOR/custodian position breaks remain open",
-        fail_action="Review PBOR/custodian position breaks and document resolution",
+        fail_note=("High-severity PBOR/custodian position breaks remain open" if position_mask.any()
+                   else "Position reconciliation is unavailable; no position records were supplied"),
+        fail_action=("Review PBOR/custodian position breaks and document resolution" if position_mask.any()
+                     else "Supply internal and custodian position feeds and run reconciliation"),
     )
 
     cash_mask = _is_cash_recon(recon)
@@ -126,12 +131,14 @@ def build_signoff_summary(
     cash_high_open = recon[cash_mask & open_mask & high_recon_mask] if not recon.empty else pd.DataFrame()
     cash = _row(
         control_area="Cash Reconciliation",
-        passed=cash_high_open.empty,
+        passed=bool(cash_mask.any()) and cash_high_open.empty,
         high_severity_count=len(cash_high_open),
         open_exception_count=len(cash_open),
         pass_note="No high-severity cash reconciliation breaks remain open",
-        fail_note="High-severity cash reconciliation breaks remain open",
-        fail_action="Review bank/ledger cash break and document resolution",
+        fail_note=("High-severity cash reconciliation breaks remain open" if cash_mask.any()
+                   else "Cash reconciliation is unavailable; no cash records were supplied"),
+        fail_action=("Review bank/ledger cash break and document resolution" if cash_mask.any()
+                     else "Supply internal and bank cash feeds and run reconciliation"),
     )
 
     previous_rows = [attribution, qa, positions, cash]

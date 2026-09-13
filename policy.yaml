@@ -3,7 +3,7 @@ reporting_window: mtd_asof
 cash_flow_timing: end_of_day
 large_cash_flow_threshold: 0.1
 dividend_interest_treatment: internal_income
-benchmark_id_default: BM_GROWTH
+benchmark_id_default: BM1
 cash_return_source: 0%
 cash_return_annual_rates:
   SOFR: 0.05
@@ -15,6 +15,7 @@ holdings_tolerance: 0.0001
 attribution_reconciliation_tolerance_bps: 5.0
 nav_jump_zero_flow_threshold: 0.1
 portfolio_benchmark_map:
+  PF1: BM1
   PF_GROWTH: BM_GROWTH
   PF_INCOME: BM_INCOME
 position_recon:

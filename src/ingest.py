@@ -103,6 +103,11 @@ def _ensure_columns(conn: sqlite3.Connection, table_name: str, columns: dict[str
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     _ensure_columns(
         conn,
+        "pbor_monthly_returns",
+        {"portfolio_return_arithmetic": "REAL", "active_return_arithmetic": "REAL"},
+    )
+    _ensure_columns(
+        conn,
         "pbor_recon_exceptions",
         {
             "workflow_status": "TEXT",
