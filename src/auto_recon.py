@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 POSITION_KEY = ["asof_date", "portfolio_id", "account_id", "security_id"]
@@ -129,15 +130,33 @@ def _position_recon_policy(policy: dict[str, object]) -> dict[str, object]:
 def _policy_float(policy: dict[str, object], key: str, default: float) -> float:
     settings = _position_recon_policy(policy)
     try:
-        return float(settings.get(key, default))
-    except (TypeError, ValueError):
-        return default
+        value = float(settings.get(key, default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be a finite non-negative number") from exc
+    if not np.isfinite(value) or value < 0:
+        raise ValueError(f"{key} must be a finite non-negative number")
+    return value
 
 
-def _coerce_numeric(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+def _validate_feed(
+    frame: pd.DataFrame, keys: list[str], columns: list[str], source_name: str,
+) -> pd.DataFrame:
+    """Validate before joining so malformed records cannot silently match."""
     out = frame.copy()
+    for key in keys:
+        invalid = out[key].isna() | out[key].astype(str).str.strip().eq("")
+        if invalid.any():
+            raise ValueError(f"{source_name} has missing key values in {key}")
+    parsed_dates = pd.to_datetime(out["asof_date"], errors="coerce")
+    if parsed_dates.isna().any():
+        raise ValueError(f"{source_name} has invalid asof_date values")
+    out["asof_date"] = parsed_dates.dt.strftime("%Y-%m-%d")
+    if out.duplicated(keys).any():
+        raise ValueError(f"{source_name} has duplicate reconciliation keys: {', '.join(keys)}")
     for column in columns:
         out[column] = pd.to_numeric(out[column], errors="coerce")
+        if not np.isfinite(out[column]).all():
+            raise ValueError(f"{source_name} has missing or non-finite numeric values in {column}")
     return out
 
 
@@ -173,7 +192,7 @@ def reconcile_positions(
     price_tolerance_pct = _policy_float(policy, "price_tolerance_pct", 0.0005)
     market_value_tolerance = _policy_float(policy, "market_value_tolerance", 100.0)
 
-    internal = _coerce_numeric(internal_positions, ["quantity", "price", "market_value_base"]).rename(
+    internal = _validate_feed(internal_positions, POSITION_KEY, ["quantity", "price", "market_value_base"], "internal_positions").rename(
         columns={
             "ticker": "ticker_internal",
             "quantity": "internal_quantity",
@@ -181,7 +200,7 @@ def reconcile_positions(
             "market_value_base": "internal_market_value",
         }
     )
-    external = _coerce_numeric(custodian_positions, ["quantity", "price", "market_value_base"]).rename(
+    external = _validate_feed(custodian_positions, POSITION_KEY, ["quantity", "price", "market_value_base"], "custodian_positions").rename(
         columns={
             "ticker": "ticker_external",
             "quantity": "external_quantity",
@@ -246,10 +265,10 @@ def reconcile_cash(
 
     cash_tolerance = _policy_float(policy, "cash_tolerance", 50.0)
 
-    internal = _coerce_numeric(internal_cash, ["cash_balance"]).rename(
+    internal = _validate_feed(internal_cash, CASH_KEY, ["cash_balance"], "internal_cash").rename(
         columns={"cash_balance": "internal_cash"}
     )
-    external = _coerce_numeric(bank_cash, ["cash_balance"]).rename(columns={"cash_balance": "external_cash"})
+    external = _validate_feed(bank_cash, CASH_KEY, ["cash_balance"], "bank_cash").rename(columns={"cash_balance": "external_cash"})
 
     merged = internal.merge(external, on=CASH_KEY, how="outer", indicator=True)
     merged["cash_diff"] = merged["external_cash"] - merged["internal_cash"]

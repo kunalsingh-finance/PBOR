@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -176,11 +177,12 @@ def _display_portfolio_view(
     breaks: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None, bool]:
     if monthly_returns.empty or "portfolio_id" not in monthly_returns.columns:
-        return daily_returns, monthly_returns, attribution, breaks, None, False
-
-    ordered = monthly_returns.copy()
-    ordered["month_end_sort"] = pd.to_datetime(ordered["month_end"], errors="coerce")
-    latest_row = ordered.sort_values(["month_end_sort", "portfolio_id"]).iloc[-1]
+        if daily_returns.empty or "portfolio_id" not in daily_returns.columns:
+            return daily_returns, monthly_returns, attribution, breaks, None, False
+        ordered = daily_returns.assign(_sort_date=pd.to_datetime(daily_returns["date"]))
+    else:
+        ordered = monthly_returns.assign(_sort_date=pd.to_datetime(monthly_returns["month_end"]))
+    latest_row = ordered.sort_values(["_sort_date", "portfolio_id"]).iloc[-1]
     portfolio_id = str(latest_row["portfolio_id"])
     multi_portfolio = ordered["portfolio_id"].astype(str).nunique() > 1
 
@@ -188,7 +190,10 @@ def _display_portfolio_view(
     if not daily_returns.empty and "portfolio_id" in daily_returns.columns:
         daily_view = daily_returns[daily_returns["portfolio_id"].astype(str) == portfolio_id].copy()
 
-    monthly_view = monthly_returns[monthly_returns["portfolio_id"].astype(str) == portfolio_id].copy()
+    monthly_view = (
+        monthly_returns[monthly_returns["portfolio_id"].astype(str) == portfolio_id].copy()
+        if "portfolio_id" in monthly_returns.columns else monthly_returns.copy()
+    )
 
     attribution_view = attribution
     if not attribution.empty and "portfolio_id" in attribution.columns:
@@ -243,7 +248,7 @@ def _draw_card(
         y + 0.30 * h,
         value,
         color=accent_color,
-        fontsize=14,
+        fontsize=10.5 if len(value) > 11 else 14,
         weight="bold",
         transform=ax.transAxes,
     )
@@ -406,6 +411,10 @@ def _plot_attribution(
     labels = [str(r["sector"]) for _, r in month_attr.iterrows()]
     colors = [POSITIVE if value >= 0 else NEGATIVE for value in month_attr["active_bps"]]
     bars = ax.barh(labels, month_attr["active_bps"], color=colors, alpha=0.88)
+    low = min(0.0, float(month_attr["active_bps"].min()))
+    high = max(0.0, float(month_attr["active_bps"].max()))
+    span = max(high - low, 1.0)
+    ax.set_xlim(low - 0.20 * span, high + 0.20 * span)
     for bar in bars:
         bar.set_alpha(0.9)
     ax.axvline(0.0, color=GRID_COLOR, linewidth=1.0, alpha=0.9)
@@ -414,7 +423,7 @@ def _plot_attribution(
     ax.set_xlabel("Active Effect (bps)")
     ax.grid(axis="x", alpha=0.25, color=GRID_COLOR)
     for bar, value in zip(bars, month_attr["active_bps"]):
-        offset = 6 if value >= 0 else -6
+        offset = 0.025 * span if value >= 0 else -0.025 * span
         align = "left" if value >= 0 else "right"
         ax.text(
             value + offset,
@@ -559,6 +568,7 @@ def generate_tear_sheet(
     reconciliation_tolerance_bps: float = 5.0,
     cash_return_source: str = "0%",
     date_context: dict[str, object] | None = None,
+    ready_for_signoff: bool | None = None,
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     png_path = output_dir / "tearsheet.png"
@@ -598,33 +608,26 @@ def generate_tear_sheet(
         display_monthly_returns.sort_values("month_end").iloc[-1] if not display_monthly_returns.empty else None
     )
     status_value = "Controls Passed" if "Controls Passed" in status_line else "Under Review"
-    status_color = POSITIVE if status_value == "Controls Passed" else WARNING
+    if ready_for_signoff is not None:
+        status_value = "Ready for sign-off" if ready_for_signoff else "Under Review"
+    status_color = POSITIVE if status_value in {"Controls Passed", "Ready for sign-off"} else WARNING
     active_value = (
         _pct(float(latest_month_row["active_return"])) if latest_month_row is not None else "N/A"
     )
     tracking_error_value = _fmt_pct_metric(float(risk["tracking_error"]))
     break_count_value = str(int(len(display_breaks)))
-    portfolio_note = (
-        "Personal project sample from a multi-portfolio run"
-        if multi_portfolio
-        else "Personal project sample from a single-portfolio run"
-    )
+    portfolio_note = "Performance: selected portfolio | Readiness: all controls" if ready_for_signoff is not None else "Performance: selected portfolio | Readiness: not evaluated"
 
-    fig = plt.figure(figsize=(13.4, 8.6), constrained_layout=True)
+    # Fixed panel bounds keep long text from shrinking unrelated charts and cards.
+    fig = plt.figure(figsize=(13.4, 8.6))
     fig.patch.set_facecolor(FIG_BG)
-    engine = fig.get_layout_engine()
-    if engine:
-        engine.set(h_pad=8 / 72, hspace=0.14)
-    gs = fig.add_gridspec(4, 2, height_ratios=[1.05, 1.0, 0.55, 0.88], width_ratios=[1.3, 1.0])
-
-    ax_title = fig.add_subplot(gs[0, :])
-    ax_perf = fig.add_subplot(gs[1:3, 0])
-    right_spec = gs[1:3, 1].subgridspec(3, 1, height_ratios=[3.2, 1.6, 0.6], hspace=0.24)
-    ax_attr = fig.add_subplot(right_spec[0])
-    ax_attr_table = fig.add_subplot(right_spec[1])
-    ax_driver = fig.add_subplot(right_spec[2])
+    ax_title = fig.add_axes([0.045, 0.735, 0.91, 0.23])
+    ax_perf = fig.add_axes([0.06, 0.30, 0.43, 0.365])
+    ax_attr = fig.add_axes([0.58, 0.495, 0.37, 0.16])
+    ax_attr_table = fig.add_axes([0.58, 0.305, 0.37, 0.10])
+    ax_driver = fig.add_axes([0.58, 0.235, 0.37, 0.045])
     ax_driver.axis("off")
-    ax_qa = fig.add_subplot(gs[3, :])
+    ax_qa = fig.add_axes([0.045, 0.035, 0.91, 0.15])
 
     ax_title.axis("off")
     ax_title.add_patch(
@@ -639,73 +642,67 @@ def generate_tear_sheet(
             transform=ax_title.transAxes,
         )
     )
-    ax_title.text(0.04, 0.86, "Portfolio Reconciliation & Reporting Control Engine", fontsize=9.5, color=ACCENT, weight="bold")
-    ax_title.text(0.04, 0.70, "Month-End Tear Sheet", fontsize=20, color=TEXT_MAIN, weight="bold")
+    ax_title.text(0.025, 0.87, "Portfolio Reconciliation & Reporting Control Engine", fontsize=9.5, color=ACCENT, weight="bold")
+    ax_title.text(0.025, 0.70, "Month-End Tear Sheet", fontsize=20, color=TEXT_MAIN, weight="bold")
     ax_title.text(
-        0.04,
+        0.025,
         0.56,
         f"{display_portfolio_id or 'N/A'}  |  As-of {data_asof_date}  |  {data_label}",
-        fontsize=10.6,
+        fontsize=9.4,
         color=TEXT_MUTED,
     )
-    ax_title.text(0.04, 0.45, portfolio_note, fontsize=9.0, color=TEXT_MUTED)
-    ax_title.text(0.04, 0.31, f"Generated: {generated_at_et}", fontsize=9.2, color=TEXT_MUTED)
+    ax_title.text(0.025, 0.45, portfolio_note, fontsize=8.5, color=TEXT_MUTED)
+    try:
+        generated_display = pd.Timestamp(generated_at_et).strftime("%Y-%m-%d %H:%M ET")
+    except (ValueError, TypeError):
+        generated_display = generated_at_et
+    ax_title.text(0.025, 0.31, f"Generated: {generated_display}", fontsize=8.5, color=TEXT_MUTED)
     if market_last_closed:
-        ax_title.text(0.04, 0.21, f"Market last closed session: {market_last_closed}", fontsize=9.2, color=TEXT_MUTED)
+        ax_title.text(0.025, 0.21, f"Market last closed session: {market_last_closed}", fontsize=8.5, color=TEXT_MUTED)
     ax_title.text(
-        0.04,
+        0.025,
         0.11,
         (
             "Analysis window: "
             f"{analysis_window['start']} to {analysis_window['end']} "
             f"({int(analysis_window['obs_rows'])} obs rows | {int(analysis_window['trading_days'])} trading days)"
         ),
-        fontsize=8.9,
+        fontsize=8.1,
         color=TEXT_MUTED,
     )
     ax_title.text(
-        0.04,
+        0.025,
         0.03,
         (
             "MTD window: "
             f"{mtd_window['start']} to {mtd_window['end']} "
             f"({int(mtd_window['obs_rows'])} obs rows | {int(mtd_window['trading_days'])} trading days)"
         ),
-        fontsize=8.9,
+        fontsize=8.1,
         color=TEXT_MUTED,
     )
-    ax_title.text(0.62, 0.88, _portfolio_summary(display_monthly_returns), fontsize=9.2, color=TEXT_MAIN)
-    if period_rows:
-        period_line = "Linked returns: " + " | ".join(
-            f"{str(r['period'])} {_pct(float(r['portfolio']))} / {_pct(float(r['benchmark']))} / {_pct(float(r['active_twr']))}"
-            for r in period_rows
-        )
-        ax_title.text(0.62, 0.78, period_line, fontsize=8.0, color=TEXT_MUTED)
+    if latest_month_row is not None:
+        ax_title.text(0.60, 0.88,
+                      f"MTD TWR {_pct(float(latest_month_row['portfolio_return_twr']))}  |  Benchmark {_pct(float(latest_month_row['benchmark_return']))}",
+                      fontsize=9.0, color=TEXT_MAIN)
+        ax_title.text(0.60, 0.77,
+                      f"Modified Dietz {_pct(float(latest_month_row['portfolio_return_dietz']))}",
+                      fontsize=8.5, color=TEXT_MUTED)
 
-    _draw_card(ax_title, 0.62, 0.49, 0.16, 0.20, "Status", status_value, status_color)
-    _draw_card(ax_title, 0.80, 0.49, 0.16, 0.20, "Active TWR", active_value, ACCENT_ALT)
-    _draw_card(ax_title, 0.62, 0.22, 0.16, 0.20, "Tracking Error", tracking_error_value, ACCENT)
-    _draw_card(ax_title, 0.80, 0.22, 0.16, 0.20, "Breaks", break_count_value, WARNING if len(display_breaks) else POSITIVE)
+    _draw_card(ax_title, 0.60, 0.48, 0.17, 0.20, "Pack Readiness" if ready_for_signoff is not None else "Attribution", status_value, status_color)
+    _draw_card(ax_title, 0.80, 0.48, 0.17, 0.20, "Active TWR", active_value, ACCENT_ALT)
+    _draw_card(ax_title, 0.60, 0.20, 0.17, 0.20, "Tracking Error", tracking_error_value, ACCENT)
+    _draw_card(ax_title, 0.80, 0.20, 0.17, 0.20, "QA findings", break_count_value, WARNING if len(display_breaks) else POSITIVE)
 
     ax_title.text(
-        0.62,
-        0.06,
-        "\n".join(control_lines),
-        fontsize=8.6,
+        0.60,
+        0.035,
+        f"Attribution diff: {float(recon['diff_bps']):.1f} bps | Sector diff: {float(recon['portfolio_return_diff_bps']):.1f} bps\n"
+        f"Weights: Wp {float(recon['w_p_sum']):.2f} / Wb {float(recon['w_b_sum']):.2f}",
+        fontsize=7.5,
         color=TEXT_MUTED,
         va="bottom",
     )
-
-    if "Under Review" in status_line:
-        ax_title.text(
-            0.96,
-            0.92,
-            "FOR REVIEW ONLY",
-            fontsize=10,
-            weight="bold",
-            color=NEGATIVE,
-            ha="right",
-        )
 
     _plot_cumulative_performance(ax_perf, daily_returns=display_daily_returns)
     month_attr = _plot_attribution(
@@ -720,9 +717,9 @@ def generate_tear_sheet(
         ax_driver.text(
             0.0,
             0.5,
-            driver_line,
+            textwrap.fill(driver_line, width=74, break_long_words=False),
             transform=ax_driver.transAxes,
-            fontsize=8.1,
+            fontsize=7.9,
             ha="left",
             va="center",
             clip_on=True,
@@ -755,10 +752,13 @@ def generate_tear_sheet(
     if detract:
         lines.append(f"Top detractor: {detract[0]}")
     lines.append(_analyst_commentary(month_attr=month_attr, recon=recon, cash_return_source=cash_return_source))
-    left_block = "\n".join(f"- {line}" for line in lines[:5])
-    right_block = "\n".join(f"- {line}" for line in lines[5:10])
-    ax_qa.text(0.03, 0.90, left_block if left_block else "- No QA lines", fontsize=9.1, va="top", color=TEXT_MAIN)
-    ax_qa.text(0.53, 0.90, right_block, fontsize=9.1, va="top", color=TEXT_MAIN)
+    def wrap_bullets(block: list[str]) -> str:
+        return "\n".join(textwrap.fill(line, width=79, initial_indent="- ", subsequent_indent="  ", break_long_words=False)
+                         for line in block)
+    left_block = wrap_bullets(lines[:5])
+    right_block = wrap_bullets(lines[5:10])
+    ax_qa.text(0.02, 0.92, left_block if left_block else "- No QA lines", fontsize=8.2, va="top", color=TEXT_MAIN, linespacing=1.3)
+    ax_qa.text(0.52, 0.92, right_block, fontsize=8.2, va="top", color=TEXT_MAIN, linespacing=1.3)
     fig.savefig(png_path, dpi=180, facecolor=fig.get_facecolor())
     fig.savefig(pdf_path, facecolor=fig.get_facecolor())
     plt.close(fig)

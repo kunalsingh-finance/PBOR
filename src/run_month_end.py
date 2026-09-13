@@ -8,15 +8,15 @@ from pathlib import Path
 import pandas as pd
 
 from pbor.date_source import derive_date_context
-from .auto_recon import NON_EXCEPTION_STATUSES, RECON_OUTPUT_COLUMNS, run_auto_recon
+from .auto_recon import RECON_OUTPUT_COLUMNS, run_auto_recon
 from .attribution import compute_monthly_attribution
 from .export import export_outputs
 from .ingest import initialize_db, ingest_qa_summary, load_inputs, load_policy, load_tables
 from .qa import run_break_checks
-from .reconciliation import latest_reconciliation
+from .reconciliation import latest_portfolio_reconciliations, latest_reconciliation
 from .report import generate_tear_sheet
 from .returns import compute_returns
-from .signoff import build_signoff_summary
+from .signoff import _open_recon_mask, build_signoff_summary
 
 
 def _replace_table(conn: sqlite3.Connection, table_name: str, frame: pd.DataFrame) -> None:
@@ -32,14 +32,6 @@ def _has_high_severity(frame: pd.DataFrame) -> bool:
     return bool(frame["severity"].astype(str).str.upper().eq("HIGH").any())
 
 
-def _open_recon_mask(frame: pd.DataFrame) -> pd.Series:
-    if frame.empty:
-        return pd.Series(dtype=bool)
-    if "workflow_status" in frame.columns:
-        return frame["workflow_status"].astype(str).str.upper().ne("CLOSED")
-    return ~frame["status"].astype(str).isin(NON_EXCEPTION_STATUSES)
-
-
 def _recon_metrics(recon_exceptions: pd.DataFrame) -> dict[str, object]:
     if recon_exceptions.empty:
         return {
@@ -51,8 +43,9 @@ def _recon_metrics(recon_exceptions: pd.DataFrame) -> dict[str, object]:
     status = recon_exceptions["status"].astype(str)
     total = int(len(recon_exceptions))
     matched = int(status.eq("MATCHED").sum())
-    open_exceptions = int((~status.isin(NON_EXCEPTION_STATUSES)).sum())
-    high_severity = int(recon_exceptions["severity"].astype(str).str.upper().eq("HIGH").sum())
+    open_mask = _open_recon_mask(recon_exceptions)
+    open_exceptions = int(open_mask.sum())
+    high_severity = int((recon_exceptions["severity"].astype(str).str.upper().eq("HIGH") & open_mask).sum())
     return {
         "recon_rows": total,
         "recon_open_exceptions": open_exceptions,
@@ -94,7 +87,7 @@ def _open_high_severity_recon_count(recon_exceptions: pd.DataFrame) -> int:
 def _sla_count(recon_exceptions: pd.DataFrame, bucket: str) -> int:
     if recon_exceptions.empty or "sla_bucket" not in recon_exceptions.columns:
         return 0
-    return int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq(bucket).sum())
+    return int((recon_exceptions["sla_bucket"].astype(str).str.upper().eq(bucket) & _open_recon_mask(recon_exceptions)).sum())
 
 
 def run_month_end(
@@ -161,30 +154,35 @@ def run_month_end(
             attribution=attribution,
             tolerance_bps=reconciliation_tolerance_bps,
         )
-        if recon_latest["available"] and not recon_latest["within_tolerance"]:
+        portfolio_recon = latest_portfolio_reconciliations(
+            monthly_returns, attribution, reconciliation_tolerance_bps
+        )
+        for _, failed_recon in portfolio_recon.loc[~portfolio_recon["within_tolerance"]].iterrows():
             extra = [
                 {
                     "asof_date": asof,
-                    "portfolio_id": recon_latest["portfolio_id"],
+                    "portfolio_id": failed_recon["portfolio_id"],
                     "break_type": "ATTRIBUTION_RECONCILIATION_FAIL",
                     "severity": "HIGH",
                     "details": (
-                        f"Attribution diff {recon_latest['diff_bps']:.1f} bps exceeds "
-                        f"{reconciliation_tolerance_bps:.1f} bps."
+                        f"Attribution diff {failed_recon['diff_bps']:.1f} bps; "
+                        f"tolerance {reconciliation_tolerance_bps:.1f} bps; "
+                        f"weights valid: {bool(failed_recon['weights_ok'])}; "
+                        f"data complete: {bool(failed_recon['data_complete'])}."
                     ),
                     "root_cause": "Attribution and performance return bases are not aligned.",
-                    "resolution": "Align attribution window and arithmetic return definition before using the sample output pack.",
+                    "resolution": "Align attribution window, weights and arithmetic return definition before reporting sign-off.",
                 }
             ]
-            if not recon_latest["portfolio_return_ok"]:
+            if not failed_recon["portfolio_return_ok"]:
                 extra.append(
                     {
                         "asof_date": asof,
-                        "portfolio_id": recon_latest["portfolio_id"],
+                        "portfolio_id": failed_recon["portfolio_id"],
                         "break_type": "SECTOR_CONTRIBUTION_RECONCILIATION_FAIL",
                         "severity": "HIGH",
                         "details": (
-                            f"Sector-vs-portfolio return diff {recon_latest['portfolio_return_diff_bps']:.1f} bps exceeds "
+                            f"Sector-vs-portfolio return diff {failed_recon['portfolio_return_diff_bps']:.1f} bps exceeds "
                             f"{reconciliation_tolerance_bps:.1f} bps."
                         ),
                         "root_cause": "Sector contribution construction is not consistent with portfolio return base.",
@@ -224,6 +222,8 @@ def run_month_end(
                 "dietz_denominator",
                 "benchmark_return",
                 "active_return",
+                "portfolio_return_arithmetic",
+                "active_return_arithmetic",
             ]
         ].copy()
         _replace_table(conn, "pbor_monthly_returns", monthly_for_db)
@@ -272,6 +272,7 @@ def run_month_end(
             reconciliation_tolerance_bps=reconciliation_tolerance_bps,
             cash_return_source=cash_return_source,
             date_context=date_ctx,
+            ready_for_signoff=ready_for_signoff,
         )
 
         return {

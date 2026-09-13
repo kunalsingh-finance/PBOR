@@ -1,9 +1,12 @@
-"""Dashboard for Portfolio Reconciliation & Reporting Control Engine data in pbor_lite.db."""
-
+"""PBOR's local portfolio analytics and reconciliation workspace."""
 from __future__ import annotations
 
-import math
+import io
+import json
 import sqlite3
+import sys
+import zipfile
+from contextlib import closing
 from pathlib import Path
 
 import altair as alt
@@ -11,847 +14,348 @@ import pandas as pd
 import streamlit as st
 import yaml
 
-DB_PATH = Path(__file__).resolve().parents[1] / "pbor_lite.db"
-POLICY_PATH = Path(__file__).resolve().parents[1] / "policy.yaml"
-NON_EXCEPTION_STATUSES = {"MATCHED", "WITHIN_TOLERANCE"}
-RECON_COLUMNS = [
-    "asof_date",
-    "portfolio_id",
-    "account_id",
-    "security_id",
-    "ticker",
-    "currency",
-    "break_type",
-    "status",
-    "workflow_status",
-    "severity",
-    "sla_bucket",
-    "internal_quantity",
-    "external_quantity",
-    "quantity_diff",
-    "internal_price",
-    "external_price",
-    "price_diff",
-    "internal_market_value",
-    "external_market_value",
-    "market_value_diff",
-    "internal_cash",
-    "external_cash",
-    "cash_diff",
-    "root_cause",
-    "resolution_note",
-    "action_required",
-    "owner",
-    "age_days",
-]
-SIGNOFF_COLUMNS = [
-    "control_area",
-    "status",
-    "high_severity_count",
-    "open_exception_count",
-    "ready_for_signoff",
-    "review_note",
-    "action_required",
-]
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-st.set_page_config(
-    page_title="Portfolio Reconciliation & Reporting Control Engine",
-    page_icon=":bar_chart:",
-    layout="wide",
-)
+from src.reconciliation import attribution_reconciliation
+from src.review import REVIEW_STATUSES, exception_key, load_review_history, load_reviews, save_review
+
+DB_PATH = ROOT / "pbor_lite.db"
+TABLES = {
+    "monthly": "pbor_monthly_returns", "daily": "pbor_daily_returns",
+    "attribution": "pbor_attribution_monthly", "breaks": "pbor_breaks",
+    "recon": "pbor_recon_exceptions", "signoff": "pbor_signoff_summary",
+}
+COLORS = ["#3b82f6", "#94a3b8", "#f59e0b"]
+st.set_page_config(page_title="PBOR · Portfolio Control", page_icon="◈", layout="wide")
 
 
-def _show_empty_message() -> None:
-    st.markdown(
-        """
-        <div style="padding: 0.9rem 1rem; border-radius: 0.6rem; background: #F3F4F6; color: #374151; border: 1px solid #D1D5DB;">
-            No data available. Run month-end first.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def pct(value: object) -> str:
+    return "—" if pd.isna(value) else f"{float(value):.2%}"
 
 
-def _fmt_pct(value: float | int | None) -> str:
-    if value is None or pd.isna(value):
-        return "-"
-    return f"{float(value) * 100:.2f}%"
+def number(value: object, digits: int = 0) -> str:
+    return "—" if pd.isna(value) else f"{float(value):,.{digits}f}"
 
 
-def _fmt_bps(value: float | int | None) -> str:
-    if value is None or pd.isna(value):
-        return "-"
-    return f"{float(value) * 10000:.1f}"
+def read_workspace() -> dict[str, pd.DataFrame]:
+    """Read one coherent database snapshot without creating an empty database."""
+    with closing(sqlite3.connect(f"{DB_PATH.as_uri()}?mode=ro", uri=True)) as conn:
+        conn.execute("BEGIN")
+        return {key: pd.read_sql_query(f"SELECT * FROM {table}", conn) for key, table in TABLES.items()}
 
 
-def _fmt_number(value: float | int | None) -> str:
-    if value is None or pd.isna(value):
-        return "-"
-    return f"{float(value):,.2f}"
+def run_sample() -> None:
+    from scripts.build_recon_demo_data import build_recon_demo_data
+    from src.run_month_end import run_month_end
+
+    with st.spinner("Calculating performance, matching positions and preparing reports…"):
+        recon_dir = ROOT / "data" / "recon_demo"
+        # Preserve corrections made to an existing sample feed.
+        if not all((recon_dir / name).exists() for name in
+                   ["internal_positions.csv", "custodian_positions.csv", "internal_cash.csv", "bank_cash.csv"]):
+            build_recon_demo_data(recon_dir)
+        result = run_month_end(ROOT, "2026-01-10", recon_data_dir=recon_dir)
+        st.session_state["last_run"] = result
+    st.rerun()
 
 
-def _safe_float(value: object) -> float:
-    if value is None or pd.isna(value):
-        return math.nan
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return math.nan
+def scoped(frame: pd.DataFrame, portfolio: str) -> pd.DataFrame:
+    return frame[frame["portfolio_id"].eq(portfolio)].copy()
 
 
-def _fmt_date(value: object) -> str:
-    if value is None or pd.isna(value):
-        return "-"
-    return pd.to_datetime(value).strftime("%Y-%m-%d")
+def download_csv(label: str, frame: pd.DataFrame, name: str, key: str) -> None:
+    st.download_button(label, frame.to_csv(index=False).encode("utf-8"), name, "text/csv", key=key)
 
 
-def _read_table_safely(table_name: str, expected_columns: list[str]) -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        table_info = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        existing_columns = [str(row[1]) for row in table_info]
-        if not existing_columns:
-            return pd.DataFrame(columns=expected_columns)
-        selected_columns = [column for column in expected_columns if column in existing_columns]
-        if not selected_columns:
-            return pd.DataFrame(columns=expected_columns)
-        frame = pd.read_sql_query(f"SELECT {', '.join(selected_columns)} FROM {table_name}", conn)
-    finally:
-        conn.close()
-    for column in expected_columns:
-        if column not in frame.columns:
+def line_chart(frame: pd.DataFrame, date: str, fields: list[str], title: str = "Return") -> None:
+    plot = frame[[date] + fields].melt(date, var_name="Series", value_name="Value")
+    chart = alt.Chart(plot).mark_line(strokeWidth=2.5).encode(
+        x=alt.X(f"{date}:T", title=None, scale=alt.Scale(type="utc"),
+                axis=alt.Axis(format="%d %b", tickCount=min(8, len(frame)))),
+        y=alt.Y("Value:Q", title=title, axis=alt.Axis(format=".1%")),
+        color=alt.Color("Series:N", scale=alt.Scale(domain=fields, range=COLORS[:len(fields)]), legend=alt.Legend(orient="bottom", title=None)),
+        tooltip=[alt.Tooltip(f"{date}:T", title="Date", timeUnit="utcyearmonthdate", format="%d %b %Y"), "Series:N", alt.Tooltip("Value:Q", format=".2%")],
+    ).properties(height=310)
+    st.altair_chart(chart, width="stretch")
+
+
+def performance(monthly: pd.DataFrame, daily: pd.DataFrame) -> None:
+    st.subheader("Portfolio performance")
+    ordered = daily.sort_values("date").copy()
+    # The opening valuation has no prior investment base. Anchor it at 1;
+    # missing returns after that opening observation must still break the line.
+    if not ordered.empty and pd.isna(ordered.iloc[0]["daily_return"]):
+        ordered.loc[ordered.index[0], "daily_return"] = 0.0
+    # Missing returns remain missing; do not turn a missing benchmark into a zero return.
+    ordered["Portfolio"] = (1 + ordered["daily_return"]).cumprod(skipna=False) - 1
+    ordered["Benchmark"] = (1 + ordered["benchmark_return"]).cumprod(skipna=False) - 1
+    if ordered["benchmark_return"].isna().any():
+        st.warning("Benchmark coverage is incomplete. Benchmark comparison is unavailable after the first missing observation.")
+    line_chart(ordered, "date", ["Portfolio", "Benchmark"], "Cumulative return")
+    st.caption("Geometrically linked daily returns for the selected portfolio. External contributions and withdrawals are excluded from performance.")
+    display = monthly.rename(columns={"month_end": "Period", "portfolio_return_twr": "TWR",
+        "portfolio_return_dietz": "Modified Dietz", "benchmark_return": "Benchmark", "active_return": "Active return"})
+    columns = ["Period", "TWR", "Modified Dietz", "Benchmark", "Active return"]
+    st.dataframe(display[columns].style.format({c: "{:.2%}" for c in columns[1:]}, na_rep="—"), hide_index=True, width="stretch")
+    download_csv("Export performance", monthly, "portfolio_performance.csv", "performance_csv")
+    with st.expander("Drawdown and observed risk"):
+        wealth = 1 + ordered["Portfolio"]
+        peak = wealth.cummax().clip(lower=1)
+        ordered["Drawdown"] = wealth / peak - 1
+        left, right = st.columns(2)
+        left.metric("Maximum drawdown", pct(ordered["Drawdown"].min()))
+        right.metric("Return observations", len(ordered))
+        line_chart(ordered, "date", ["Drawdown"], "Drawdown")
+        st.caption("The opening valuation anchors wealth at 1. Short sample windows are insufficient for a reliable annualized Sharpe estimate.")
+
+
+def attribution_view(monthly: pd.DataFrame, attribution: pd.DataFrame, policy: dict) -> None:
+    st.subheader("Sources of active return")
+    if attribution.empty:
+        st.info("No attribution is available for this portfolio.")
+        return
+    period = st.selectbox("Attribution period", sorted(attribution["month_end"].unique(), reverse=True))
+    frame = attribution[attribution["month_end"].eq(period)].copy()
+    effects = {"allocation_effect": "Allocation", "selection_effect": "Selection", "interaction_effect": "Interaction"}
+    plot = frame[["sector"] + list(effects)].rename(columns=effects).melt("sector", var_name="Effect", value_name="bps")
+    plot["bps"] *= 10000
+    chart = alt.Chart(plot).mark_bar(cornerRadiusEnd=3).encode(
+        x=alt.X("sector:N", title=None), xOffset="Effect:N", y=alt.Y("bps:Q", title="Basis points"),
+        color=alt.Color("Effect:N", scale=alt.Scale(range=COLORS), legend=alt.Legend(orient="bottom", title=None)),
+        tooltip=["sector:N", "Effect:N", alt.Tooltip("bps:Q", format=".2f")],
+    ).properties(height=300)
+    st.altair_chart(chart, width="stretch")
+    if "active_return_arithmetic" not in monthly.columns:
+        st.warning("Recalculate this workspace to include the arithmetic return basis required for attribution controls.")
+    else:
+        recon = attribution_reconciliation(monthly[monthly["month_end"].eq(period)], frame,
+                    float(policy.get("attribution_reconciliation_tolerance_bps", 5)))
+        if not recon.empty:
+            row = recon.iloc[0]
+            cols = st.columns(3)
+            cols[0].metric("Attributed active return", pct(row["attribution_sum"]))
+            cols[1].metric("Arithmetic active return", pct(row["active_return_reference"]))
+            cols[2].metric("Difference · bps", number(row["diff_bps"], 2))
+            tolerance = policy.get("attribution_reconciliation_tolerance_bps", 5)
+            if bool(row["within_tolerance"]):
+                st.success(f"Attribution reconciles within {tolerance} bps; weights and sector return checks pass.")
+            else:
+                st.warning(f"Attribution requires review. Active return and sector return must reconcile within {tolerance} bps, with portfolio and benchmark weights summing to 100%.")
+    st.caption("Brinson–Fachler allocation, selection and interaction effects use an arithmetic return basis. Period TWR is reported separately in Performance.")
+    shown = frame[["sector", "w_p", "w_b", "r_p", "r_b", "active_effect"]].rename(columns={
+        "sector": "Sector", "w_p": "Portfolio weight", "w_b": "Benchmark weight", "r_p": "Sector return",
+        "r_b": "Benchmark sector return", "active_effect": "Active effect"})
+    st.dataframe(shown.style.format({c: "{:.2%}" for c in shown.columns if c != "Sector"}, na_rep="—"), hide_index=True, width="stretch")
+    download_csv("Export attribution", frame, "attribution.csv", "attribution_csv")
+
+
+def control_overview(signoff: pd.DataFrame, recon: pd.DataFrame, breaks: pd.DataFrame) -> None:
+    st.subheader("Reporting readiness")
+    st.caption("All portfolios and reconciliation books in the current run.")
+    final = signoff[signoff["control_area"].eq("Final Reporting Sign-Off")]
+    ready = not final.empty and bool(final.iloc[0]["ready_for_signoff"])
+    open_recon = recon[~recon["workflow_status"].eq("CLOSED")] if not recon.empty else recon
+    cols = st.columns(4)
+    cols[0].metric("Release status", "Ready" if ready else "On hold")
+    cols[1].metric("Open reconciliation breaks", len(open_recon))
+    cols[2].metric("High priority", int(open_recon["severity"].eq("HIGH").sum()) if not open_recon.empty else 0)
+    cols[3].metric("QA findings", len(breaks))
+    if ready:
+        st.success("All required checks pass. The reporting pack is ready for human review.")
+    else:
+        st.warning("Reporting is on hold until required controls pass. Review notes do not clear a financial break.")
+    if signoff.empty:
+        st.info("Run controls to generate a readiness assessment.")
+    else:
+        visible = signoff[~signoff["control_area"].eq("Final Reporting Sign-Off")]
+        st.dataframe(visible[["control_area", "status", "open_exception_count", "action_required"]].rename(columns={
+            "control_area": "Control", "status": "Result", "open_exception_count": "Open findings", "action_required": "Next action"}),
+            hide_index=True, width="stretch")
+    with st.expander(f"Quality checks · {len(breaks)} findings", expanded=not breaks.empty):
+        if breaks.empty:
+            st.success("No QA findings in this run.")
+        else:
+            st.dataframe(breaks.drop(columns=["break_id"], errors="ignore"), hide_index=True, width="stretch")
+            download_csv("Export QA findings", breaks, "qa_findings.csv", "qa_csv")
+
+
+def reconciliation_view(frame: pd.DataFrame) -> None:
+    st.subheader("Exception workbench")
+    st.caption("Review position and cash differences, assign responsibility and retain investigation evidence.")
+    if frame.empty:
+        st.info("No reconciliation feed has been loaded. Recalculate the bundled workspace to load the sample position and cash records.")
+        return
+    frame = frame.copy()
+    frame["exception_key"] = frame.apply(lambda row: exception_key(row.to_dict()), axis=1)
+    reviews = load_reviews(DB_PATH)
+    if not reviews.empty:
+        frame = frame.merge(reviews[["exception_key", "owner", "review_status", "note", "updated_at"]].rename(columns={"owner": "review_owner"}), on="exception_key", how="left")
+    else:
+        for column in ["review_owner", "review_status", "note", "updated_at"]:
             frame[column] = pd.NA
-    return frame[expected_columns].copy()
-
-
-def _derive_workflow_status(status: object) -> str:
-    return "CLOSED" if str(status) in NON_EXCEPTION_STATUSES else "OPEN"
-
-
-def _derive_sla_bucket(status: object, age_days: object) -> str:
-    if str(status) in NON_EXCEPTION_STATUSES:
-        return "N/A"
-    try:
-        age = int(age_days)
-    except (TypeError, ValueError):
-        age = 0
-    if age <= 1:
-        return "CURRENT"
-    if age <= 3:
-        return "WATCHLIST"
-    return "BREACHED"
-
-
-def _ensure_recon_display_columns(frame: pd.DataFrame) -> pd.DataFrame:
-    if frame.empty:
-        return pd.DataFrame(columns=RECON_COLUMNS)
-    out = frame.copy()
-    for column in RECON_COLUMNS:
-        if column not in out.columns:
-            out[column] = pd.NA
-    out["workflow_status"] = out.apply(
-        lambda row: row["workflow_status"] if pd.notna(row["workflow_status"]) else _derive_workflow_status(row["status"]),
-        axis=1,
-    )
-    out["sla_bucket"] = out.apply(
-        lambda row: row["sla_bucket"] if pd.notna(row["sla_bucket"]) else _derive_sla_bucket(row["status"], row["age_days"]),
-        axis=1,
-    )
-    out["action_required"] = out["action_required"].fillna(out["resolution_note"]).fillna("Review and document resolution")
-    return out[RECON_COLUMNS].copy()
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_monthly_returns() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        frame = pd.read_sql_query(
-            """
-            SELECT month_end, portfolio_id, portfolio_return_twr, portfolio_return_dietz,
-                   dietz_denominator, benchmark_return, active_return
-            FROM pbor_monthly_returns
-            ORDER BY month_end
-            """,
-            conn,
-        )
-    finally:
-        conn.close()
-    if frame.empty:
-        return frame
-    frame["month_end"] = pd.to_datetime(frame["month_end"])
-    return frame
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_attribution() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        frame = pd.read_sql_query(
-            """
-            SELECT month_end, portfolio_id, benchmark_id, sector, w_p, w_b, r_p, r_b,
-                   allocation_effect, selection_effect, interaction_effect, active_effect
-            FROM pbor_attribution_monthly
-            ORDER BY month_end, sector
-            """,
-            conn,
-        )
-    finally:
-        conn.close()
-    if frame.empty:
-        return frame
-    frame["month_end"] = pd.to_datetime(frame["month_end"])
-    return frame
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_breaks() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        frame = pd.read_sql_query(
-            """
-            SELECT asof_date, portfolio_id, break_type, severity, details, root_cause, resolution
-            FROM pbor_breaks
-            ORDER BY asof_date DESC, severity DESC, break_type
-            """,
-            conn,
-        )
-    finally:
-        conn.close()
-    if frame.empty:
-        return frame
-    frame["asof_date"] = pd.to_datetime(frame["asof_date"])
-    return frame
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_recon_exceptions() -> pd.DataFrame:
-    frame = _ensure_recon_display_columns(_read_table_safely("pbor_recon_exceptions", RECON_COLUMNS))
-    if frame.empty:
-        return frame
-    frame["asof_date"] = pd.to_datetime(frame["asof_date"])
-    return frame.sort_values(["asof_date", "severity", "status", "break_type"], ascending=[False, False, True, True])
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_signoff_summary() -> pd.DataFrame:
-    return _read_table_safely("pbor_signoff_summary", SIGNOFF_COLUMNS)
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_daily_returns() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        frame = pd.read_sql_query(
-            """
-            SELECT date, portfolio_id, portfolio_value_base, external_flow_base, daily_return, benchmark_return
-            FROM pbor_daily_returns
-            ORDER BY date
-            """,
-            conn,
-        )
-    finally:
-        conn.close()
-    if frame.empty:
-        return frame
-    frame["date"] = pd.to_datetime(frame["date"])
-    return frame
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_policy() -> dict[str, object]:
-    if not POLICY_PATH.exists():
-        return {}
-    return yaml.safe_load(POLICY_PATH.read_text(encoding="utf-8")) or {}
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_table_counts() -> dict[str, int]:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        counts: dict[str, int] = {}
-        for table in [
-            "pbor_daily_positions",
-            "pbor_daily_returns",
-            "pbor_monthly_returns",
-            "pbor_attribution_monthly",
-            "pbor_breaks",
-            "pbor_recon_exceptions",
-        ]:
-            try:
-                result = pd.read_sql_query(f"SELECT COUNT(*) AS row_count FROM {table}", conn)
-                counts[table] = int(result["row_count"].iloc[0])
-            except sqlite3.OperationalError:
-                counts[table] = 0
-    finally:
-        conn.close()
-    return counts
-
-
-def _build_return_chart(frame: pd.DataFrame, cumulative: bool) -> alt.Chart:
-    chart_data = frame[["month_end", "portfolio_return_twr", "benchmark_return"]].copy().fillna(0.0)
-    chart_data = chart_data.rename(
-        columns={
-            "portfolio_return_twr": "Portfolio TWR",
-            "benchmark_return": "Benchmark",
-        }
-    )
-    if cumulative:
-        chart_data["Portfolio TWR"] = (1.0 + chart_data["Portfolio TWR"]).cumprod() - 1.0
-        chart_data["Benchmark"] = (1.0 + chart_data["Benchmark"]).cumprod() - 1.0
-
-    plot_data = chart_data.melt("month_end", var_name="Series", value_name="Return")
-    return (
-        alt.Chart(plot_data)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("month_end:T", title="Month End"),
-            y=alt.Y("Return:Q", title="Return", axis=alt.Axis(format="%")),
-            color=alt.Color("Series:N", title="Series"),
-            tooltip=[
-                alt.Tooltip("month_end:T", title="Month End"),
-                alt.Tooltip("Series:N", title="Series"),
-                alt.Tooltip("Return:Q", title="Return", format=".2%"),
-            ],
-        )
-        .properties(height=360)
-    )
-
-
-def _style_active_returns(display_frame: pd.DataFrame) -> pd.io.formats.style.Styler:
-    def active_color(value: object) -> str:
-        if isinstance(value, str):
-            raw = value.replace("%", "").replace(",", "").strip()
-            if not raw or raw == "-":
-                return ""
-            try:
-                numeric = float(raw)
-            except ValueError:
-                return ""
-            if numeric > 0:
-                return "color: #166534; font-weight: 600;"
-            if numeric < 0:
-                return "color: #B91C1C; font-weight: 600;"
-        return ""
-
-    return display_frame.style.applymap(active_color, subset=["Active Return"])
-
-
-def render_monthly_returns_tab(monthly_returns: pd.DataFrame) -> None:
-    st.subheader("Monthly Returns")
-    if monthly_returns.empty:
-        _show_empty_message()
-        return
-
-    months = monthly_returns["month_end"].drop_duplicates().sort_values().tolist()
-    if len(months) == 1:
-        range_value = (months[0], months[0])
-        st.caption(f"Date range: {pd.Timestamp(months[0]).strftime('%Y-%m-%d')}")
-    else:
-        range_value = st.select_slider(
-            "Date range",
-            options=months,
-            value=(months[0], months[-1]),
-            format_func=lambda x: pd.Timestamp(x).strftime("%Y-%m-%d"),
-        )
-    cumulative = st.toggle("Cumulative Return", value=False)
-    filtered = monthly_returns[
-        (monthly_returns["month_end"] >= pd.Timestamp(range_value[0]))
-        & (monthly_returns["month_end"] <= pd.Timestamp(range_value[1]))
-    ].copy()
-
-    display = pd.DataFrame(
-        {
-            "Month End": filtered["month_end"].dt.strftime("%Y-%m-%d"),
-            "TWR": filtered["portfolio_return_twr"].map(_fmt_pct),
-            "Mod. Dietz": filtered["portfolio_return_dietz"].map(_fmt_pct),
-            "Benchmark": filtered["benchmark_return"].map(_fmt_pct),
-            "Active Return": filtered["active_return"].map(_fmt_pct),
-        }
-    )
-    st.dataframe(_style_active_returns(display), use_container_width=True, hide_index=True)
-    st.altair_chart(_build_return_chart(filtered, cumulative=cumulative), use_container_width=True)
-
-
-def _build_attribution_chart(frame: pd.DataFrame) -> alt.Chart:
-    plot = frame[["sector", "allocation_effect", "selection_effect", "interaction_effect"]].copy()
-    plot = plot.rename(
-        columns={
-            "allocation_effect": "Allocation Effect",
-            "selection_effect": "Selection Effect",
-            "interaction_effect": "Interaction Effect",
-        }
-    )
-    plot = plot.melt("sector", var_name="Effect", value_name="bps")
-    plot["bps"] = plot["bps"] * 10000.0
-    return (
-        alt.Chart(plot)
-        .mark_bar()
-        .encode(
-            x=alt.X("sector:N", title="Sector"),
-            xOffset="Effect:N",
-            y=alt.Y("bps:Q", title="Effect (bps)"),
-            color=alt.Color("Effect:N", title="Effect"),
-            tooltip=[
-                alt.Tooltip("sector:N", title="Sector"),
-                alt.Tooltip("Effect:N", title="Effect"),
-                alt.Tooltip("bps:Q", title="bps", format=".1f"),
-            ],
-        )
-        .properties(height=380)
-    )
-
-
-def render_attribution_tab(attribution: pd.DataFrame, monthly_returns: pd.DataFrame) -> None:
-    st.subheader("Attribution Waterfall")
-    if attribution.empty or monthly_returns.empty:
-        _show_empty_message()
-        return
-
-    month_options = attribution["month_end"].drop_duplicates().sort_values(ascending=False).tolist()
-    selected_month = st.selectbox(
-        "Month",
-        options=month_options,
-        format_func=lambda x: pd.Timestamp(x).strftime("%Y-%m-%d"),
-    )
-    month_attr = attribution[attribution["month_end"] == pd.Timestamp(selected_month)].copy()
-    month_return = monthly_returns[monthly_returns["month_end"] == pd.Timestamp(selected_month)].copy()
-
-    st.altair_chart(_build_attribution_chart(month_attr), use_container_width=True)
-
-    active_return = _safe_float(month_return["active_return"].iloc[0]) if not month_return.empty else math.nan
-    total_active = _safe_float(month_attr["active_effect"].sum())
-    diff_bps = abs(total_active - active_return) * 10000.0 if not math.isnan(active_return) else math.nan
-    if math.isnan(diff_bps):
-        status_color = "#92400E"
-        status_label = "UNDER REVIEW"
-    else:
-        passed = bool(diff_bps < 5.0)
-        status_color = "#166534" if passed else "#B91C1C"
-        status_label = "PASS" if passed else "FAIL"
-    summary_cols = st.columns(3)
-    summary_cols[0].metric("Total Active Effect (bps)", _fmt_bps(total_active))
-    summary_cols[1].metric("Portfolio Active Return (bps)", _fmt_bps(active_return))
-    summary_cols[2].markdown(
-        f"""
-        <div style="padding: 0.6rem 0.9rem; border-radius: 0.6rem; background: #F9FAFB; border: 1px solid #E5E7EB;">
-            <div style="font-size: 0.85rem; color: #4B5563;">Reconciliation Status</div>
-            <div style="font-size: 1.1rem; font-weight: 700; color: {status_color};">{status_label}</div>
-            <div style="font-size: 0.85rem; color: #4B5563;">Diff: {_fmt_bps(diff_bps)} bps</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    with st.expander("Raw attribution data"):
-        raw = pd.DataFrame(
-            {
-                "Sector": month_attr["sector"],
-                "w_p": month_attr["w_p"].map(_fmt_pct),
-                "w_b": month_attr["w_b"].map(_fmt_pct),
-                "r_p": month_attr["r_p"].map(_fmt_pct),
-                "r_b": month_attr["r_b"].map(_fmt_pct),
-                "Alloc": month_attr["allocation_effect"].map(_fmt_bps),
-                "Select": month_attr["selection_effect"].map(_fmt_bps),
-                "Interact": month_attr["interaction_effect"].map(_fmt_bps),
-                "Active": month_attr["active_effect"].map(_fmt_bps),
-            }
-        )
-        st.dataframe(raw, use_container_width=True, hide_index=True)
-
-
-def render_breaks_tab(breaks: pd.DataFrame) -> None:
-    st.subheader("QA Breaks")
-    if breaks.empty:
-        st.success("No QA breaks in the current run.")
-        return
-
-    st.error(f"{len(breaks)} QA breaks in the current run.")
-
-    display = pd.DataFrame(
-        {
-            "As-Of Date": breaks["asof_date"].dt.strftime("%Y-%m-%d"),
-            "Portfolio": breaks["portfolio_id"].fillna("-"),
-            "Break Type": breaks["break_type"],
-            "Severity": breaks["severity"],
-            "Details": breaks["details"],
-        }
-    )
-
-    def severity_style(value: object) -> str:
-        if value == "HIGH":
-            return "background-color: #FEE2E2; color: #991B1B; font-weight: 600;"
-        if value == "MEDIUM":
-            return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
-        if value == "LOW":
-            return "background-color: #E5E7EB; color: #374151; font-weight: 600;"
-        return ""
-
-    st.dataframe(
-        display.style.applymap(severity_style, subset=["Severity"]),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.download_button(
-        "Download Breaks CSV",
-        data=display.to_csv(index=False).encode("utf-8"),
-        file_name="pbor_breaks.csv",
-        mime="text/csv",
-    )
-
-
-def _open_recon_mask(frame: pd.DataFrame) -> pd.Series:
-    if frame.empty:
-        return pd.Series(dtype=bool)
-    if "workflow_status" in frame.columns:
-        return frame["workflow_status"].astype(str).str.upper().ne("CLOSED")
-    return ~frame["status"].astype(str).isin(NON_EXCEPTION_STATUSES)
-
-
-def _render_signoff_control_center(recon_exceptions: pd.DataFrame, signoff_summary: pd.DataFrame) -> None:
-    st.markdown("### Sign-Off Control Center")
-
-    final = signoff_summary[signoff_summary["control_area"] == "Final Reporting Sign-Off"] if not signoff_summary.empty else pd.DataFrame()
-    signoff_ready = bool(final.iloc[0]["ready_for_signoff"]) if not final.empty else False
-    failed_control_areas = (
-        signoff_summary[
-            (signoff_summary["status"].astype(str) == "FAIL")
-            & (signoff_summary["control_area"] != "Final Reporting Sign-Off")
-        ]
-        if not signoff_summary.empty
-        else pd.DataFrame()
-    )
-    open_mask = _open_recon_mask(recon_exceptions)
-    high_recon = (
-        int((recon_exceptions["severity"].astype(str).str.upper().eq("HIGH") & open_mask).sum())
-        if not recon_exceptions.empty and "severity" in recon_exceptions.columns
-        else 0
-    )
-    breached = (
-        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("BREACHED").sum())
-        if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
-        else 0
-    )
-    watchlist = (
-        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("WATCHLIST").sum())
-        if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
-        else 0
-    )
-
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Final Sign-Off", "Ready" if signoff_ready else "Not Ready")
-    metric_cols[1].metric("Failed Areas", f"{len(failed_control_areas):,}")
-    metric_cols[2].metric("Open High Recon", f"{high_recon:,}")
-    sla_cols = st.columns(2)
-    sla_cols[0].metric("SLA Breached", f"{breached:,}")
-    sla_cols[1].metric("Watchlist", f"{watchlist:,}")
-
-    if signoff_summary.empty:
-        st.info("No sign-off summary available. Run month-end to generate control readiness output.")
-        return
-
-    signoff_display = signoff_summary.rename(
-        columns={
-            "control_area": "Control Area",
-            "status": "Status",
-            "high_severity_count": "High Severity Count",
-            "open_exception_count": "Open Exception Count",
-            "ready_for_signoff": "Ready for Sign-Off",
-            "review_note": "Review Note",
-            "action_required": "Action Required",
-        }
-    )
-    signoff_display["Ready for Sign-Off"] = signoff_display["Ready for Sign-Off"].map(
-        lambda value: "Yes" if bool(value) else "No"
-    )
-    st.dataframe(signoff_display, use_container_width=True, hide_index=True)
-
-
-def render_auto_recon_tab(recon_exceptions: pd.DataFrame, signoff_summary: pd.DataFrame) -> None:
-    st.subheader("Auto Reconciliation")
-    _render_signoff_control_center(recon_exceptions, signoff_summary)
-
-    if recon_exceptions.empty:
-        st.info("No auto-reconciliation records available. Run month-end with --recon-data-dir.")
-        return
-
-    frame = recon_exceptions.copy()
-    status = frame["status"].astype(str)
-    workflow_status = frame["workflow_status"].astype(str)
-    total_records = int(len(frame))
-    matched_records = int(status.eq("MATCHED").sum())
-    open_exceptions = int(workflow_status.str.upper().ne("CLOSED").sum())
-    high_exceptions = int(
-        (frame["severity"].astype(str).str.upper().eq("HIGH") & workflow_status.str.upper().ne("CLOSED")).sum()
-    )
-    cash_break_amount = float(
-        pd.to_numeric(frame.loc[status.eq("CASH_BREAK"), "cash_diff"], errors="coerce").abs().sum()
-    )
-    market_value_break_amount = float(
-        pd.to_numeric(frame.loc[~status.isin(NON_EXCEPTION_STATUSES), "market_value_diff"], errors="coerce")
-        .abs()
-        .sum()
-    )
-    match_rate = matched_records / total_records if total_records else 0.0
-    final = signoff_summary[signoff_summary["control_area"] == "Final Reporting Sign-Off"] if not signoff_summary.empty else pd.DataFrame()
-    ready_for_signoff = bool(final.iloc[0]["ready_for_signoff"]) if not final.empty else high_exceptions == 0
-
-    st.markdown("### Exception Queue")
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Match Rate %", f"{match_rate * 100:.1f}%")
-    metric_cols[1].metric("Total Records", f"{total_records:,}")
-    metric_cols[2].metric("Open Exceptions", f"{open_exceptions:,}")
-    metric_cols[3].metric("High Severity Exceptions", f"{high_exceptions:,}")
-
-    value_cols = st.columns(3)
-    value_cols[0].metric("Cash Break Amount", _fmt_number(cash_break_amount))
-    value_cols[1].metric("Market Value Break Amount", _fmt_number(market_value_break_amount))
-    value_cols[2].metric("Ready for Sign-Off", "Yes" if ready_for_signoff else "No")
-    st.caption("Readiness here is recon-only unless QA and attribution controls are reviewed in the full month-end pack.")
-
-    filter_cols = st.columns(5)
-    severity_options = sorted(frame["severity"].dropna().astype(str).unique().tolist())
-    status_options = sorted(frame["status"].dropna().astype(str).unique().tolist())
-    break_type_options = sorted(frame["break_type"].dropna().astype(str).unique().tolist())
-    workflow_options = sorted(frame["workflow_status"].dropna().astype(str).unique().tolist())
-    sla_options = sorted(frame["sla_bucket"].dropna().astype(str).unique().tolist())
-    selected_severity = filter_cols[0].selectbox("Severity", ["All"] + severity_options)
-    selected_status = filter_cols[1].selectbox("Status", ["All"] + status_options)
-    selected_break_type = filter_cols[2].selectbox("Break Type", ["All"] + break_type_options)
-    selected_workflow = filter_cols[3].selectbox("Workflow Status", ["All"] + workflow_options)
-    selected_sla = filter_cols[4].selectbox("SLA Bucket", ["All"] + sla_options)
-
+    frame["review_status"] = frame["review_status"].fillna("Unreviewed")
+    controls = st.columns([2, 1, 1, 2])
+    book = controls[0].selectbox("Reconciliation book", ["All books"] + sorted(frame["portfolio_id"].unique().tolist()))
+    severity = controls[1].selectbox("Severity", ["All", "HIGH", "MEDIUM", "LOW"])
+    review = controls[2].selectbox("Review", ["All"] + list(REVIEW_STATUSES))
+    query = controls[3].text_input("Search security or account", placeholder="Ticker, security, account…")
+    only_open = st.checkbox("Open breaks only", value=True)
     filtered = frame.copy()
-    if selected_severity != "All":
-        filtered = filtered[filtered["severity"].astype(str) == selected_severity]
-    if selected_status != "All":
-        filtered = filtered[filtered["status"].astype(str) == selected_status]
-    if selected_break_type != "All":
-        filtered = filtered[filtered["break_type"].astype(str) == selected_break_type]
-    if selected_workflow != "All":
-        filtered = filtered[filtered["workflow_status"].astype(str) == selected_workflow]
-    if selected_sla != "All":
-        filtered = filtered[filtered["sla_bucket"].astype(str) == selected_sla]
-
-    column_labels = {
-        "asof_date": "As-Of Date",
-        "portfolio_id": "Portfolio",
-        "account_id": "Account",
-        "security_id": "Security",
-        "ticker": "Ticker",
-        "currency": "Currency",
-        "break_type": "Break Type",
-        "status": "Status",
-        "workflow_status": "Workflow Status",
-        "severity": "Severity",
-        "sla_bucket": "SLA Bucket",
-        "internal_quantity": "Internal Qty",
-        "external_quantity": "External Qty",
-        "quantity_diff": "Qty Diff",
-        "internal_price": "Internal Price",
-        "external_price": "External Price",
-        "price_diff": "Price Diff",
-        "internal_market_value": "Internal MV",
-        "external_market_value": "External MV",
-        "market_value_diff": "MV Diff",
-        "internal_cash": "Internal Cash",
-        "external_cash": "External Cash",
-        "cash_diff": "Cash Diff",
-        "root_cause": "Root Cause",
-        "resolution_note": "Resolution Note",
-        "action_required": "Action Required",
-        "owner": "Owner",
-        "age_days": "Age Days",
-    }
-    display = filtered[list(column_labels.keys())].rename(columns=column_labels)
-    if not display.empty:
-        display["As-Of Date"] = pd.to_datetime(display["As-Of Date"]).dt.strftime("%Y-%m-%d")
-        display = display.fillna("-").replace({"None": "-", "nan": "-"})
-    st.dataframe(display, use_container_width=True, hide_index=True)
-    st.download_button(
-        "Download Recon Exceptions CSV",
-        data=filtered.to_csv(index=False).encode("utf-8"),
-        file_name="recon_exceptions.csv",
-        mime="text/csv",
-    )
-
-
-def render_policy_metadata_tab(monthly_returns: pd.DataFrame, policy: dict[str, object], table_counts: dict[str, int]) -> None:
-    st.subheader("Policy & Run Metadata")
-    if monthly_returns.empty:
-        _show_empty_message()
+    if book != "All books": filtered = filtered[filtered["portfolio_id"].eq(book)]
+    if severity != "All": filtered = filtered[filtered["severity"].eq(severity)]
+    if review != "All": filtered = filtered[filtered["review_status"].eq(review)]
+    if only_open: filtered = filtered[~filtered["workflow_status"].eq("CLOSED")]
+    if query:
+        mask = filtered[["ticker", "security_id", "account_id", "currency"]].fillna("").astype(str).apply(
+            lambda column: column.str.contains(query, case=False, regex=False)).any(axis=1)
+        filtered = filtered[mask]
+    filtered = filtered.assign(_priority=filtered["severity"].map({"HIGH": 0, "MEDIUM": 1, "LOW": 2})).sort_values(["_priority", "age_days"], ascending=[True, False]).drop(columns="_priority")
+    labels = {"ticker": "Ticker", "currency": "Currency", "status": "Technical result", "severity": "Severity",
+        "market_value_diff": "Value difference · base", "cash_diff": "Cash difference · currency", "sla_bucket": "SLA",
+        "review_owner": "Review owner", "review_status": "Review status"}
+    st.caption(f"{len(filtered)} of {len(frame)} records · Cash differences remain in their stated currency.")
+    st.dataframe(filtered[list(labels)].rename(columns=labels).style.format(na_rep="—"), hide_index=True, width="stretch")
+    download_csv("Export filtered queue", filtered, "exception_queue.csv", "queue_csv")
+    candidates = filtered[~filtered["workflow_status"].eq("CLOSED")]
+    if candidates.empty:
+        st.info("No open breaks match these filters.")
         return
-
-    latest = monthly_returns.sort_values("month_end").iloc[-1]
-    left_col, right_col = st.columns(2)
-
-    sofr_rate = policy.get("cash_return_annual_rates", {}).get("SOFR", "-") if isinstance(policy.get("cash_return_annual_rates", {}), dict) else "-"
-    policy_rows = pd.DataFrame(
-        {
-            "Setting": [
-                "Base Currency",
-                "Benchmark",
-                "Cash Return Source",
-                "SOFR Rate",
-                "Large CF Threshold",
-                "Recon Tolerance",
-            ],
-            "Value": [
-                policy.get("base_currency", "-"),
-                policy.get("benchmark_id_default", "-"),
-                policy.get("cash_return_source", "-"),
-                _fmt_pct(float(sofr_rate)) if sofr_rate != "-" else "-",
-                str(policy.get("large_cash_flow_threshold", "-")),
-                f"{policy.get('attribution_reconciliation_tolerance_bps', '-')} bps",
-            ],
-        }
-    )
-
-    metadata_rows = pd.DataFrame(
-        {
-            "Metric": [
-                "Last As-Of Date",
-                "Portfolio ID",
-                "Months of History",
-                "TWR (latest month)",
-                "Active Return (latest month)",
-                "Total Rows in DB",
-            ],
-            "Value": [
-                _fmt_date(latest["month_end"]),
-                latest["portfolio_id"],
-                str(int(len(monthly_returns))),
-                _fmt_pct(latest["portfolio_return_twr"]),
-                _fmt_pct(latest["active_return"]),
-                str(int(sum(table_counts.values()))),
-            ],
-        }
-    )
-
-    with left_col:
-        st.markdown("**Policy Settings**")
-        st.dataframe(policy_rows, use_container_width=True, hide_index=True)
-
-    with right_col:
-        st.markdown("**Last Run Summary**")
-        st.dataframe(metadata_rows, use_container_width=True, hide_index=True)
+    options = candidates["exception_key"].tolist()
+    indexed = candidates.set_index("exception_key")
+    selected = st.selectbox("Inspect exception", options, format_func=lambda key:
+        f"{indexed.loc[key, 'portfolio_id']} / {indexed.loc[key, 'account_id']} / "
+        f"{indexed.loc[key, 'ticker'] if pd.notna(indexed.loc[key, 'ticker']) else indexed.loc[key, 'currency']} — {indexed.loc[key, 'status']}")
+    row = indexed.loc[selected]
+    left, right = st.columns([1, 1])
+    with left:
+        st.markdown("#### Source comparison")
+        comparison = pd.DataFrame({"Measure": ["Quantity", "Price", "Market value · base", "Cash · stated currency"],
+            "Internal": [row["internal_quantity"], row["internal_price"], row["internal_market_value"], row["internal_cash"]],
+            "External": [row["external_quantity"], row["external_price"], row["external_market_value"], row["external_cash"]]})
+        st.dataframe(comparison.style.format({"Internal": "{:,.2f}", "External": "{:,.2f}"}, na_rep="—"), hide_index=True, width="stretch")
+        st.write("**Suggested investigation:**", row["action_required"])
+        st.caption(f"Source date: {row['asof_date']} · Age: {row['age_days']} days as recorded by the run")
+    with right:
+        st.markdown("#### Record a review")
+        with st.form(f"review_{selected}"):
+            owner = st.text_input("Owner", value=str(row["review_owner"]) if pd.notna(row["review_owner"]) else "", max_chars=120, key=f"owner_{selected}")
+            state = st.selectbox("Review status", list(REVIEW_STATUSES), index=list(REVIEW_STATUSES).index(row["review_status"]), key=f"status_{selected}")
+            note = st.text_area("Investigation note", placeholder="Record the evidence reviewed and the next action (at least 10 characters).", max_chars=2000, key=f"note_{selected}")
+            if st.form_submit_button("Save review", type="primary"):
+                try:
+                    save_review(DB_PATH, selected, owner, state, note)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state["review_saved"] = True
+                    st.rerun()
+        st.caption("Each save appends a dated entry. Correct the source records and rerun controls to clear a technical break.")
+    history = load_review_history(DB_PATH)
+    if not history.empty:
+        history = history[history["exception_key"].eq(selected)]
+        with st.expander(f"Review history · {len(history)} entries", expanded=not history.empty):
+            st.dataframe(history[["updated_at", "owner", "review_status", "note"]], hide_index=True, width="stretch")
 
 
-def _build_drawdown_chart(frame: pd.DataFrame) -> alt.Chart:
-    return (
-        alt.Chart(frame)
-        .mark_area(color="#B91C1C", opacity=0.35)
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("drawdown:Q", title="Drawdown", axis=alt.Axis(format="%")),
-            tooltip=[
-                alt.Tooltip("date:T", title="Date"),
-                alt.Tooltip("drawdown:Q", title="Drawdown", format=".2%"),
-            ],
-        )
-        .properties(height=250)
-    )
-
-
-def _build_risk_chart(frame: pd.DataFrame) -> alt.Chart:
-    plot = frame[["date", "rolling_vol_30d"]].dropna().copy()
-    return (
-        alt.Chart(plot)
-        .mark_line(color="#1D4ED8")
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("rolling_vol_30d:Q", title="30D Volatility", axis=alt.Axis(format="%")),
-            tooltip=[
-                alt.Tooltip("date:T", title="Date"),
-                alt.Tooltip("rolling_vol_30d:Q", title="30D Vol", format=".2%"),
-            ],
-        )
-        .properties(height=250)
-    )
-
-
-def render_drawdown_risk_tab(daily_returns: pd.DataFrame, policy: dict[str, object]) -> None:
-    st.subheader("Drawdown & Risk")
-    if daily_returns.empty:
-        _show_empty_message()
-        return
-
-    frame = daily_returns.copy().sort_values("date")
-    frame["daily_return"] = pd.to_numeric(frame["daily_return"], errors="coerce").fillna(0.0)
-    frame["portfolio_cum"] = (1.0 + frame["daily_return"]).cumprod()
-    frame["running_max"] = frame["portfolio_cum"].cummax()
-    frame["drawdown"] = frame["portfolio_cum"] / frame["running_max"] - 1.0
-    frame["rolling_vol_30d"] = frame["daily_return"].rolling(30).std() * math.sqrt(252)
-
-    annualized_return = frame["daily_return"].mean() * 252
-    annualized_vol = frame["daily_return"].std() * math.sqrt(252)
-    sofr_rate = 0.0
-    cash_rates = policy.get("cash_return_annual_rates", {})
-    if isinstance(cash_rates, dict):
-        try:
-            sofr_rate = float(cash_rates.get("SOFR", 0.0))
-        except (TypeError, ValueError):
-            sofr_rate = 0.0
-    sharpe = (annualized_return - sofr_rate) / annualized_vol if annualized_vol and not math.isnan(annualized_vol) else math.nan
-
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Max Drawdown", _fmt_pct(frame["drawdown"].min()))
-    metric_cols[1].metric("30D Vol (latest)", _fmt_pct(frame["rolling_vol_30d"].dropna().iloc[-1] if frame["rolling_vol_30d"].notna().any() else math.nan))
-    metric_cols[2].metric("Sharpe Ratio", f"{sharpe:.2f}" if not math.isnan(sharpe) else "-")
-
-    st.altair_chart(_build_drawdown_chart(frame), use_container_width=True)
-    st.altair_chart(_build_risk_chart(frame), use_container_width=True)
-
-
-monthly_returns = load_monthly_returns()
-attribution = load_attribution()
-breaks = load_breaks()
-recon_exceptions = load_recon_exceptions()
-signoff_summary = load_signoff_summary()
-daily_returns = load_daily_returns()
-policy = load_policy()
-table_counts = load_table_counts()
-
-with st.sidebar:
-    st.title("Portfolio Reconciliation & Reporting Control Engine")
-    st.caption("Reconciliation & reporting controls")
-    if monthly_returns.empty:
-        st.write("Last data refresh date: -")
+def reports_view(data: dict[str, pd.DataFrame], policy: dict) -> None:
+    st.subheader("Reporting pack")
+    st.caption("Reports reflect the last calculation. The review journal is exported separately and does not alter sign-off.")
+    latest = pd.to_datetime(data["daily"]["date"]).max()
+    folder = ROOT / "outputs" / latest.strftime("%Y-%m")
+    for name, label, mime in [("report.xlsx", "Download Excel report", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                               ("onepager.pdf", "Download performance tear sheet", "application/pdf")]:
+        file = folder / name
+        if file.exists():
+            st.download_button(label, file.read_bytes(), name, mime)
+    files = [p for p in folder.iterdir() if p.is_file() and p.suffix in {".csv", ".json", ".xlsx", ".pdf", ".png", ".md"}] if folder.exists() else []
+    if files:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in files: archive.writestr(path.name, path.read_bytes())
+        st.download_button("Download full reporting pack", buffer.getvalue(), f"pbor_{folder.name}.zip", "application/zip")
+        summary_file = folder / "summary.json"
+        if summary_file.exists():
+            summary = json.loads(summary_file.read_text(encoding="utf-8"))
+            st.caption(f"Calculated: {summary.get('generated_at_utc', 'Unknown')} · Reporting date: {summary.get('asof_date', 'Unknown')}")
     else:
-        st.write(f"Last data refresh date: {_fmt_date(monthly_returns['month_end'].max())}")
-    if st.button("Refresh Data", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-    st.write("DB path being used")
-    st.code(str(DB_PATH))
+        st.info("Recalculate the workspace to generate downloadable reports.")
+    journal = load_review_history(DB_PATH)
+    if not journal.empty: download_csv("Export complete review journal", journal, "review_journal.csv", "journal_csv")
+    with st.expander("Calculation policy"):
+        st.json(policy, expanded=False)
+    st.markdown("**Methodology**")
+    st.write("Daily time-weighted returns isolate investment performance from external cash flows. Modified Dietz provides a cash-flow-weighted comparison. Sector attribution uses Brinson–Fachler effects with a separate arithmetic return reconciliation.")
+    st.write("Position and cash controls compare internal records with external files using the configured tolerances. Missing feeds and failed controls block reporting readiness. The bundled operational records include intentional exceptions.")
 
-st.title("Portfolio Reconciliation & Reporting Control Engine")
-st.caption("Read-only view of the current PBOR database.")
 
-tabs = st.tabs(
-    [
-        "Monthly Returns",
-        "Attribution Waterfall",
-        "QA Breaks",
-        "Auto Reconciliation",
-        "Policy & Run Metadata",
-        "Drawdown & Risk",
-    ]
-)
+def main() -> None:
+    st.markdown("""<style>
+    .block-container {padding-top:2rem; max-width:1500px}
+    [data-testid="stSidebar"] {border-right:1px solid #24334a}
+    [data-testid="stMetric"] {padding:1rem; border:1px solid #28374c; border-radius:8px}
+    [data-testid="stMetricLabel"] {font-size:.9rem}
+    [data-testid="stMetricValue"] {font-size:1.6rem}
+    h1 {letter-spacing:-.035em} h3 {letter-spacing:-.02em}
+    [data-testid="stTabs"] button {font-size:1rem}
+    </style>""", unsafe_allow_html=True)
+    with st.sidebar:
+        st.title("◈ PBOR")
+        st.caption("PORTFOLIO CONTROL")
+    st.title("Portfolio reconciliation & attribution")
+    if not DB_PATH.exists():
+        st.write("Open a working portfolio with performance, attribution, position checks and cash reconciliation.")
+        st.info("The bundled workspace uses synthetic data for January 2026 and includes position and cash breaks to investigate.")
+        if st.button("Open sample workspace", type="primary"):
+            try: run_sample()
+            except Exception as exc: st.error(f"The workspace could not be calculated: {exc}")
+        return
+    try:
+        data = read_workspace()
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        st.error("This workspace is incomplete or unavailable. Recalculate the bundled data to rebuild the reporting tables.")
+        with st.expander("Error details"): st.code(str(exc))
+        if st.button("Rebuild sample workspace", type="primary"): run_sample()
+        return
+    if data["monthly"].empty or data["daily"].empty:
+        st.info("No calculated performance is available.")
+        if st.button("Open sample workspace", type="primary"): run_sample()
+        return
+    policy = yaml.safe_load((ROOT / "policy.yaml").read_text(encoding="utf-8"))
+    portfolios = sorted(data["monthly"]["portfolio_id"].unique().tolist())
+    with st.sidebar:
+        portfolio = st.selectbox("Performance portfolio", portfolios)
+        st.caption("Performance and attribution follow this selection. Controls cover the complete run.")
+        st.divider()
+        st.markdown("**Workspace**")
+        st.caption("Local data · bundled inputs are synthetic")
+        if st.button("Refresh workspace", width="stretch"): st.rerun()
+        with st.expander("Run calculations"):
+            st.caption("Recalculate the bundled January 2026 inputs and current sample reconciliation files. Replaces calculated reports; review history is retained.")
+            if st.button("Recalculate bundled data", type="primary"):
+                try: run_sample()
+                except Exception as exc: st.error(f"Calculation failed: {exc}")
+        st.divider()
+        st.caption("PBOR · Reconciliation, performance and reporting")
+    monthly = scoped(data["monthly"], portfolio).sort_values("month_end")
+    daily = scoped(data["daily"], portfolio).sort_values("date")
+    attr = scoped(data["attribution"], portfolio)
+    latest = monthly.iloc[-1]
+    asof = pd.to_datetime(daily["date"]).max().strftime("%d %b %Y")
+    st.caption(f"{portfolio} · {policy.get('base_currency', 'USD')} · Data through {asof}")
+    if st.session_state.pop("review_saved", False): st.success("Review saved to the journal.")
+    cols = st.columns(4)
+    cols[0].metric("Portfolio value", number(daily.iloc[-1]["portfolio_value_base"], 2))
+    cols[1].metric("Latest period · TWR", pct(latest["portfolio_return_twr"]))
+    cols[2].metric("Benchmark", pct(latest["benchmark_return"]))
+    cols[3].metric("Active return", pct(latest["active_return"]))
+    tabs = st.tabs(["Control overview", "Performance", "Attribution", "Exception workbench", "Reports & methodology"])
+    with tabs[0]: control_overview(data["signoff"], data["recon"], data["breaks"])
+    with tabs[1]: performance(monthly, daily)
+    with tabs[2]: attribution_view(monthly, attr, policy)
+    with tabs[3]: reconciliation_view(data["recon"])
+    with tabs[4]: reports_view(data, policy)
 
-with tabs[0]:
-    render_monthly_returns_tab(monthly_returns)
 
-with tabs[1]:
-    render_attribution_tab(attribution, monthly_returns)
-
-with tabs[2]:
-    render_breaks_tab(breaks)
-
-with tabs[3]:
-    render_auto_recon_tab(recon_exceptions, signoff_summary)
-
-with tabs[4]:
-    render_policy_metadata_tab(monthly_returns, policy, table_counts)
-
-with tabs[5]:
-    render_drawdown_risk_tab(daily_returns, policy)
+main()

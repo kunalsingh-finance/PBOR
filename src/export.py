@@ -11,10 +11,11 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 from pbor.date_source import derive_date_context
-from .auto_recon import NON_EXCEPTION_STATUSES, RECON_OUTPUT_COLUMNS
+from .auto_recon import RECON_OUTPUT_COLUMNS
 from .qa import flow_summary_stats, format_flow_summary_line
 from .reconciliation import attribution_reconciliation, latest_reconciliation
-from .signoff import SIGNOFF_COLUMNS
+from .report import _display_portfolio_view
+from .signoff import SIGNOFF_COLUMNS, _open_recon_mask
 
 
 def _pct(value: float) -> str:
@@ -63,6 +64,7 @@ def _linked_return(series: pd.Series) -> float:
 
 
 def _period_return_rows(daily_returns: pd.DataFrame) -> list[dict[str, float | int | str]]:
+    _require_single_portfolio(daily_returns)
     if daily_returns.empty:
         return []
     perf = daily_returns.copy().sort_values("date")
@@ -95,6 +97,7 @@ def _period_return_rows(daily_returns: pd.DataFrame) -> list[dict[str, float | i
 
 
 def _risk_metrics(daily_returns: pd.DataFrame, cash_return_source: str) -> dict[str, float]:
+    _require_single_portfolio(daily_returns)
     if daily_returns.empty:
         return {
             "tracking_error": float("nan"),
@@ -121,6 +124,11 @@ def _risk_metrics(daily_returns: pd.DataFrame, cash_return_source: str) -> dict[
         "sharpe": sharpe,
         "volatility": vol_ann,
     }
+
+
+def _require_single_portfolio(daily_returns: pd.DataFrame) -> None:
+    if "portfolio_id" in daily_returns and daily_returns["portfolio_id"].nunique() > 1:
+        raise ValueError("Select one portfolio before calculating linked returns or risk metrics")
 
 
 def _fmt_ratio(value: float) -> str:
@@ -185,14 +193,6 @@ def _prepare_signoff_summary(signoff_summary: pd.DataFrame | None) -> pd.DataFra
     return frame[SIGNOFF_COLUMNS].copy()
 
 
-def _open_recon_mask(frame: pd.DataFrame) -> pd.Series:
-    if frame.empty:
-        return pd.Series(dtype=bool)
-    if "workflow_status" in frame.columns:
-        return frame["workflow_status"].astype(str).str.upper().ne("CLOSED")
-    return ~frame["status"].astype(str).isin(NON_EXCEPTION_STATUSES)
-
-
 def _recon_summary_metrics(recon_exceptions: pd.DataFrame, ready_for_signoff: bool) -> dict[str, object]:
     if recon_exceptions.empty:
         return {
@@ -209,11 +209,12 @@ def _recon_summary_metrics(recon_exceptions: pd.DataFrame, ready_for_signoff: bo
     status = recon_exceptions["status"].astype(str)
     total = int(len(recon_exceptions))
     matched = int(status.eq("MATCHED").sum())
-    open_exceptions = int((~status.isin(NON_EXCEPTION_STATUSES)).sum())
-    high_severity = int(recon_exceptions["severity"].astype(str).str.upper().eq("HIGH").sum())
+    open_mask = _open_recon_mask(recon_exceptions)
+    open_exceptions = int(open_mask.sum())
+    high_severity = int((recon_exceptions["severity"].astype(str).str.upper().eq("HIGH") & open_mask).sum())
     cash_break_amount = float(
         pd.to_numeric(
-            recon_exceptions.loc[status.eq("CASH_BREAK"), "cash_diff"],
+            recon_exceptions.loc[status.eq("CASH_BREAK") & open_mask, "cash_diff"],
             errors="coerce",
         )
         .abs()
@@ -221,7 +222,7 @@ def _recon_summary_metrics(recon_exceptions: pd.DataFrame, ready_for_signoff: bo
     )
     market_value_break_amount = float(
         pd.to_numeric(
-            recon_exceptions.loc[~status.isin(NON_EXCEPTION_STATUSES), "market_value_diff"],
+            recon_exceptions.loc[open_mask, "market_value_diff"],
             errors="coerce",
         )
         .abs()
@@ -267,12 +268,12 @@ def _signoff_summary_metrics(
         else 0
     )
     sla_breached = (
-        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("BREACHED").sum())
+        int((recon_exceptions["sla_bucket"].astype(str).str.upper().eq("BREACHED") & open_mask).sum())
         if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
         else 0
     )
     watchlist = (
-        int(recon_exceptions["sla_bucket"].astype(str).str.upper().eq("WATCHLIST").sum())
+        int((recon_exceptions["sla_bucket"].astype(str).str.upper().eq("WATCHLIST") & open_mask).sum())
         if not recon_exceptions.empty and "sla_bucket" in recon_exceptions.columns
         else 0
     )
@@ -309,7 +310,11 @@ def _build_onepager_markdown(
     reconciliation_tolerance_bps: float,
     cash_return_source: str,
     date_context: dict[str, object] | None = None,
+    ready_for_signoff: bool | None = None,
 ) -> str:
+    daily_returns, monthly_returns, attribution, breaks, portfolio_id, multi_portfolio = _display_portfolio_view(
+        daily_returns, monthly_returns, attribution, breaks
+    )
     recon = latest_reconciliation(
         monthly_returns=monthly_returns,
         attribution=attribution,
@@ -343,6 +348,11 @@ def _build_onepager_markdown(
     lines.append("# Portfolio Reconciliation & Reporting Control Engine One-Pager")
     lines.append("")
     lines.append(f"As-of (data): {data_asof_date}")
+    lines.append(f"Performance portfolio: `{portfolio_id or 'N/A'}`")
+    if multi_portfolio:
+        lines.append("Performance, risk and attribution below cover this portfolio; CSV and workbook detail include every portfolio.")
+    pack_status = "Not evaluated" if ready_for_signoff is None else "Ready for sign-off" if ready_for_signoff else "Under Review"
+    lines.append(f"Reporting pack readiness (all portfolios and control areas): **{pack_status}**")
     lines.append(f"Generated: {generated_at_et}")
     if market_last_closed:
         lines.append(f"Market last closed session: {market_last_closed}")
@@ -403,11 +413,11 @@ def _build_onepager_markdown(
     lines.append("## Attribution Reconciliation Gate")
     lines.append("")
     if recon["available"]:
-        diff_ok = float(recon["diff_bps"]) < reconciliation_tolerance_bps
+        diff_ok = float(recon["diff_bps"]) <= reconciliation_tolerance_bps
         weights_ok = bool(recon["weights_ok"])
         sector_ok = bool(recon["portfolio_return_ok"])
         all_ok = diff_ok and weights_ok and sector_ok
-        status_line = "Controls Passed" if all_ok else "Under Review"
+        status_line = "Attribution Passed" if all_ok else "Under Review"
         lines.append(f"- Status: `{status_line}`")
         lines.append(f"- Attribution-Active diff: `{float(recon['diff_bps']):.1f} bps`")
         lines.append(f"- Sum weights: `Wp={float(recon['w_p_sum']):.2f}`, `Wb={float(recon['w_b_sum']):.2f}`")
@@ -560,8 +570,11 @@ def _build_summary_table(
     market_last_closed = window_ctx.get("market_last_closed_session")
     analysis_window = window_ctx["analysis_window"]
     mtd_window = window_ctx["mtd_window"]
-    period_rows = _period_return_rows(daily_returns)
-    risk = _risk_metrics(daily_returns=daily_returns, cash_return_source=cash_return_source)
+    display_daily, display_monthly, _, _, portfolio_id, multi_portfolio = _display_portfolio_view(
+        daily_returns, monthly_returns, attribution, breaks
+    )
+    period_rows = _period_return_rows(display_daily)
+    risk = _risk_metrics(daily_returns=display_daily, cash_return_source=cash_return_source)
     flow_window = flow_summary_stats(
         daily_returns=daily_returns,
         start_date=str(analysis_window["start"]),
@@ -581,15 +594,20 @@ def _build_summary_table(
         breaks=breaks,
         ready_for_signoff=ready_for_signoff,
     )
+    auto_recon_metrics["ready_for_signoff"] = signoff_metrics["signoff_ready"]
     rows: list[dict[str, object]] = [
         {"metric": "asof_date", "value": asof_effective},
         {"metric": "data_asof_date", "value": data_asof_date},
         {"metric": "generated_at_utc", "value": generated_at_utc},
         {"metric": "generated_at_et", "value": generated_at_et},
         {"metric": "market_last_closed_session", "value": market_last_closed},
+        {"metric": "performance_portfolio_id", "value": portfolio_id},
+        {"metric": "performance_scope", "value": "Selected portfolio; detail tabs contain every portfolio" if multi_portfolio else "Single portfolio"},
+        {"metric": "reporting_readiness_scope", "value": "All portfolios and control areas"},
+        {"metric": "attribution_detail_portfolio_id", "value": recon_latest.get("portfolio_id")},
     ]
-    if not monthly_returns.empty:
-        first = monthly_returns.sort_values("month_end").iloc[-1]
+    if not display_monthly.empty:
+        first = display_monthly.sort_values("month_end").iloc[-1]
         rows.extend(
             [
                 {"metric": "portfolio_id", "value": first["portfolio_id"]},
@@ -758,7 +776,7 @@ def _export_controls_table_image(
         if r == 0:
             cell.set_facecolor("#F1F5F9")
     status = "Controls Passed" if bool(recon_latest.get("within_tolerance", False)) else "Under Review"
-    ax.set_title(f"Controls Check ({status})", fontsize=11, loc="left", pad=6)
+    ax.set_title(f"Attribution Check ({status}) | Detail: {recon_latest.get('portfolio_id', 'N/A')}", fontsize=11, loc="left", pad=6)
     fig.savefig(controls_path, dpi=180)
     plt.close(fig)
     return controls_path
@@ -810,6 +828,8 @@ def export_outputs(
         breaks=breaks,
         ready_for_signoff=ready_for_signoff,
     )
+    ready_for_signoff = bool(signoff_metrics["signoff_ready"])
+    auto_recon_metrics["ready_for_signoff"] = ready_for_signoff
 
     attribution_recon = attribution_reconciliation(
         monthly_returns=monthly_returns,
@@ -841,6 +861,7 @@ def export_outputs(
         reconciliation_tolerance_bps=reconciliation_tolerance_bps,
         cash_return_source=cash_return_source,
         date_context=window_ctx,
+        ready_for_signoff=ready_for_signoff,
     )
     (target / "onepager.md").write_text(onepager_md, encoding="utf-8")
     report_workbook = _export_excel_report(
@@ -864,8 +885,11 @@ def export_outputs(
         recon_latest=recon_latest,
     )
 
-    period_rows = _period_return_rows(daily_returns)
-    risk = _risk_metrics(daily_returns=daily_returns, cash_return_source=cash_return_source)
+    display_daily, _, _, _, portfolio_id, multi_portfolio = _display_portfolio_view(
+        daily_returns, monthly_returns, attribution, breaks
+    )
+    period_rows = _period_return_rows(display_daily)
+    risk = _risk_metrics(daily_returns=display_daily, cash_return_source=cash_return_source)
     summary_payload = {
         "asof_date": asof_effective,
         "data_asof_date": data_asof_date,
@@ -873,7 +897,10 @@ def export_outputs(
         "generated_at_et": generated_at_et,
         "market_last_closed_session": market_last_closed,
         "reconciliation_tolerance_bps": float(reconciliation_tolerance_bps),
-        "data_status": "Controls Passed" if bool(recon_latest["within_tolerance"]) else "Under Review",
+        "data_status": "Controls Passed" if ready_for_signoff else "Under Review",
+        "reporting_readiness_scope": "All portfolios and control areas",
+        "performance_portfolio_id": portfolio_id,
+        "performance_scope": "Selected portfolio; detail files contain every portfolio" if multi_portfolio else "Single portfolio",
         "dataset_label": _dataset_label(daily_returns=daily_returns, attribution=attribution),
         "data_note": "sample market data + synthetic transaction ledger for personal-project demonstration",
         "total_recon_records": auto_recon_metrics["total_recon_records"],
@@ -920,6 +947,9 @@ def export_outputs(
             "volatility": _json_float_or_none(float(risk["volatility"])),
         },
         "attribution_reconciliation": {
+            "detail_portfolio_id": recon_latest.get("portfolio_id"),
+            "portfolio_count": recon_latest.get("portfolio_count", 0),
+            "failed_portfolio_ids": recon_latest.get("failed_portfolio_ids", []),
             "attribution_sum": float(recon_latest["attribution_sum"]),
             "active_return_arithmetic": float(recon_latest["active_return"]),
             "diff_bps": float(recon_latest["diff_bps"]),

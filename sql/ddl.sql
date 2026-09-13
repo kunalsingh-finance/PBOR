@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS pbor_monthly_returns (
     dietz_denominator REAL,
     benchmark_return REAL,
     active_return REAL,
+    portfolio_return_arithmetic REAL,
+    active_return_arithmetic REAL,
     PRIMARY KEY (month_end, portfolio_id)
 );
 

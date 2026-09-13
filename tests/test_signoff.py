@@ -31,11 +31,41 @@ def _control_status(summary: pd.DataFrame, control_area: str) -> str:
 def test_all_controls_pass_returns_final_signoff_pass() -> None:
     summary = build_signoff_summary(
         breaks=pd.DataFrame(),
-        recon_exceptions=pd.DataFrame(),
+        recon_exceptions=pd.DataFrame([
+            {"security_id": "SEC_SPY", "currency": pd.NA, "status": "MATCHED", "severity": "INFO"},
+            {"security_id": pd.NA, "currency": "USD", "status": "MATCHED", "severity": "INFO"},
+        ]),
         recon_latest=ATTRIBUTION_PASS,
     )
 
     assert _final_status(summary) == "PASS"
+
+
+def test_missing_reconciliation_inputs_block_signoff() -> None:
+    summary = build_signoff_summary(pd.DataFrame(), pd.DataFrame(), ATTRIBUTION_PASS)
+    assert _control_status(summary, "PBOR vs Custodian Positions") == "FAIL"
+    assert _control_status(summary, "Cash Reconciliation") == "FAIL"
+    assert _final_status(summary) == "FAIL"
+    notes = summary.set_index("control_area")["review_note"]
+    assert "unavailable" in notes["Cash Reconciliation"]
+
+
+def test_cash_only_feed_does_not_count_as_position_reconciliation() -> None:
+    recon = pd.DataFrame([{"currency": "USD", "status": "MATCHED", "severity": "INFO"}])
+    summary = build_signoff_summary(pd.DataFrame(), recon, ATTRIBUTION_PASS)
+    assert _control_status(summary, "Cash Reconciliation") == "PASS"
+    assert _control_status(summary, "PBOR vs Custodian Positions") == "FAIL"
+
+
+def test_missing_workflow_value_falls_back_to_technical_status() -> None:
+    from src.signoff import _open_recon_mask
+
+    recon = pd.DataFrame([
+        {"workflow_status": None, "status": "MATCHED"},
+        {"workflow_status": "", "status": "QUANTITY_BREAK"},
+        {"workflow_status": "CLOSED", "status": "QUANTITY_BREAK"},
+    ])
+    assert _open_recon_mask(recon).tolist() == [False, True, False]
 
 
 def test_attribution_fail_fails_final_signoff() -> None:
