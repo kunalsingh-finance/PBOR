@@ -350,7 +350,8 @@ def main() -> None:
     cols[1].metric("Latest period · TWR", pct(latest["portfolio_return_twr"]))
     cols[2].metric("Benchmark", pct(latest["benchmark_return"]))
     cols[3].metric("Active return", pct(latest["active_return"]))
-    tabs = st.tabs(["Control overview", "Performance", "Attribution", "Exception workbench", "Reports & methodology"])
+    tabs = st.tabs(["Control overview", "Performance", "Attribution", "Exception workbench", "Reports & methodology"],
+                   key="workspace_tab", on_change="rerun")
     with tabs[0]: control_overview(data["signoff"], data["recon"], data["breaks"])
     with tabs[1]: performance(monthly, daily)
     with tabs[2]: attribution_view(monthly, attr, policy)
