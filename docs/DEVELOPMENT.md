@@ -41,6 +41,11 @@ The data builder uses public price history and a configured cash-return source. 
 
 Runs write reporting artifacts under `outputs/YYYY-MM/` and update the SQLite database at `pbor_lite.db` by default. These files are local generated results and are excluded from Git. Re-running the same period replaces its generated artifacts; retain a separate copy if a prior run is needed for comparison.
 
+The monthly GitHub Actions workflow is the explicit publication exception: after a successful
+pipeline run, it force-stages only `outputs/YYYY-MM/` for that reporting month. Other generated
+months, raw `data_real/` inputs, logs, and the SQLite database stay excluded. Review the monthly
+artifact policy before running that workflow with non-demo data.
+
 | File | Contents |
 | --- | --- |
 | `report.xlsx` | Performance, attribution, QA, reconciliation, and sign-off workbook, including `AutoReconExceptions` and `SignOffSummary` sheets. |
