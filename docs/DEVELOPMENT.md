@@ -41,6 +41,11 @@ The data builder uses public price history and a configured cash-return source. 
 
 Runs write reporting artifacts under `outputs/YYYY-MM/` and update the SQLite database at `pbor_lite.db` by default. These files are local generated results and are excluded from Git. Re-running the same period replaces its generated artifacts; retain a separate copy if a prior run is needed for comparison.
 
+The monthly GitHub Actions workflow is the explicit publication exception: after a successful
+pipeline run, it force-stages only `outputs/YYYY-MM/` for that reporting month. Other generated
+months, raw `data_real/` inputs, logs, and the SQLite database stay excluded. Review the monthly
+artifact policy before running that workflow with non-demo data.
+
 | File | Contents |
 | --- | --- |
 | `report.xlsx` | Performance, attribution, QA, reconciliation, and sign-off workbook, including `AutoReconExceptions` and `SignOffSummary` sheets. |
@@ -69,6 +74,11 @@ python -m py_compile app/dashboard.py
 ```
 
 The tests cover return calculations, attribution, reconciliation, sign-off, reporting, and calendar behavior. `run_full_demo.py` creates synthetic reconciliation inputs and executes the reporting pipeline. `verify_demo_outputs.py` checks generated files, workbook sheets, summary metadata, and SQLite tables. These checks use bundled synthetic data without external market-data calls.
+
+A Chromium pass with Streamlit 1.55 verified the documented dashboard path: record a
+review, filter the queue, download the queue and journal, download Excel/PDF/ZIP reports,
+and recalculate the sample. Filters, review saves, and refreshes retain the selected tab.
+Recalculation keeps review history and preserves the sample's technical reporting hold.
 
 The [CI workflow](../.github/workflows/ci.yml) installs dependencies, runs tests, builds and verifies the synthetic reporting pack, and compiles the dashboard. It runs on pushes, pull requests, and manual dispatch. To start a manual run, open **Actions → CI → Run workflow** in GitHub.
 
